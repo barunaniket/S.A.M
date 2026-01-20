@@ -1,3 +1,7 @@
 python-dotenv
 google-api-python-client
 google-auth-oauthlib
+thefuzz
+jinja2
+icalendar
+click
