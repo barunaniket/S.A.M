@@ -5,3 +5,5 @@ thefuzz
 jinja2
 icalendar
 click
+dateparser
+python-dateutil
