@@ -1,3 +1,8 @@
+"""
+noyb 
+stay away from this file
+chuna bhi nahi
+"""
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from utils.config_loader import Config
