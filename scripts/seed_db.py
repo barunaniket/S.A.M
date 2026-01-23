@@ -12,7 +12,7 @@ def seed_data():
     csv_path = 'data/faculty.csv'
     try:
         with open(csv_path, mode='r') as file:
-            reader = csv.DictReader(file)
+            reader = csv.DictReader(file, skipinitialspace=True)
             for row in reader:
                 print(f"Importing {row['name']}...")
                 add_faculty_member(
