@@ -19,7 +19,8 @@ REQUIRED_KEYS = [
     "GOOGLE_PROJECT_ID",
     "GOOGLE_API_SCOPES",
     "SENDER_EMAIL",
-    "SENDER_PASSWORD"
+    "SENDER_PASSWORD",
+    "DATABASE_URL"
 ]
 
 class Config:
@@ -40,6 +41,9 @@ class Config:
     # Email Credentials
     SENDER_EMAIL = os.getenv("SENDER_EMAIL")
     SENDER_PASSWORD = os.getenv("SENDER_PASSWORD")
+
+    # Database POSTGRES
+    DATABASE_URL = os.getenv("DATABASE_URL")
 
     @classmethod
     def validate(cls):
