@@ -1,5 +1,7 @@
-name,email,phone,department,role,google_calendar_email
-Dr. Ramesh Sharma,sharma.r@college.edu,+91-98765-43210,Computer Science,Professor,sharma.r@gmail.com
-Prof. Ayush Kumar,kumar.ayush@college.edu,+91-98765-43211,Computer Science,Assistant Professor,ayush.k@gmail.com
-Dr. Priya Singh,singh.p@college.edu,+91-98765-43213,Mathematics,HOD,priya.singh@gmail.com
-Dean Rajesh Verma,verma.r@college.edu,+91-98765-43214,Administration,Dean,rajesh.v@gmail.com
+name,email,phone,department,role
+Ayush Kumar,2006rahiayush@gmail.com,9301629038,CSE,teacher
+Krishna H Zalavadiya,krish77zalavadiya@gmail.com,9886704860,CSE,student
+Kishan Bhardwaj,kishanbhardwaj0542@gmail.com,8800423590,CSE,student
+Bismun Singh Makkarh,singhekas0202@gmail.com,8085261111,AIML,teacher
+Mayank Kedia,mayank1903kedia@gmail.com,7760264209,AIML,student
+Aniket Barun,barunaniket@gmail.com,9431515754,AIML,teacher
