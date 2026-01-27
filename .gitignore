@@ -20,3 +20,4 @@ Thumbs.db
 *.ics
 generated_meetings/
 *.egg-info/
+/.pytest_cache
