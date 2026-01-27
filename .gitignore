@@ -17,3 +17,6 @@ token.json
 .DS_Store
 Thumbs.db
 /documentation unfiltered
+*.ics
+generated_meetings/
+*.egg-info/
