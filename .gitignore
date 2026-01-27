@@ -16,3 +16,4 @@ token.json
 *.swo
 .DS_Store
 Thumbs.db
+/documentation unfiltered
