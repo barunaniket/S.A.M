@@ -1,3 +1,9 @@
+"""
+run karne kaa tarika in
+1. set PYTHONPATH=.
+2. python tests/test_ics_generator.py
+"""
+
 import sys, os
 from datetime import datetime, timedelta
 import pytz
