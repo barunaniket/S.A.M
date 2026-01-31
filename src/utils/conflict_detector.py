@@ -9,7 +9,7 @@ from .google_auth import get_calendar_service
 
 def check_scheduler_conflict(scheduler_email: str, start_datetime: str, end_datetime: str) -> bool:
     """
-    Checks the scheduler's Google Calendar for any existing events during the requested time slot.
+    Checks the scheduler's Google Calendar for any blocking events during the requested time slot.
 
     Args:
         scheduler_email (str): The email of the user to check (used for context/logging).
@@ -38,8 +38,14 @@ def check_scheduler_conflict(scheduler_email: str, start_datetime: str, end_date
         if not events:
             return False
         
-        
-        return True
+        for event in events:
+            if event.get('transparency') == 'transparent':
+                continue
+            
+            print(f"Conflict detected: {event.get('summary', 'Unknown Event')} at {event['start'].get('dateTime', 'All Day')}")
+            return True
+
+        return False
 
     except Exception as e:
         print(f"Error checking conflicts for {scheduler_email}: {str(e)}")
