@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { font-family: Arial, sans-serif; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 8px; }
+        .header { background-color: #DB4437; color: white; padding: 10px; text-align: center; border-radius: 8px 8px 0 0; }
+        .content { padding: 20px; }
+        .details { background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 15px 0; }
+        .footer { text-align: center; font-size: 12px; color: #777; margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h2>Meeting Cancelled</h2>
+        </div>
+        <div class="content">
+            <p>Hello,</p>
+            <p>The following meeting has been cancelled:</p>
+
+            <div class="details">
+                <p><strong>Topic:</strong> {{ title }}</p>
+                <p><strong>Time:</strong> {{ time_str }}</p>
+                <p><strong>Location:</strong> {{ location }}</p>
+                <p><strong>Organizer:</strong> {{ organizer }}</p>
+            </div>
+
+            <p>This is an automated notification from S.A.M.</p>
+        </div>
+        <div class="footer">
+            <p>Automated by S.A.M. (Smart Administrative Messenger)</p>
+        </div>
+    </div>
+</body>
+</html>
