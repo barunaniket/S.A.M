@@ -1,6 +1,6 @@
 import psycopg2
 from psycopg2 import OperationalError, DatabaseError
-from src.utils.config_loader import Config
+from utils.config_loader import Config
 
 
 
