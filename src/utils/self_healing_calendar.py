@@ -15,6 +15,38 @@ from src.utils.db_handler import get_connection
 logger = logging.getLogger(__name__)
 
 
+def _fetch_remote_events(service, calendar_id: str, lookback_minutes: int):
+    """
+    Fetch events updated in the last `lookback_minutes` minutes,
+    including deleted ones.
+    """
+
+    updated_min = (
+        datetime.now(timezone.utc) - timedelta(minutes=lookback_minutes)
+    ).isoformat()
+
+    events = []
+    page_token = None
+
+    while True:
+        request = service.events().list(
+            calendarId=calendar_id,
+            updatedMin=updated_min,
+            showDeleted=True,
+            singleEvents=True,
+            pageToken=page_token,
+        )
+
+        response = request.execute()
+        events.extend(response.get("items", []))
+
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+
+    return events
+
+
 def sync_calendar_changes(
     calendar_id: str = "primary",
     lookback_minutes: int = 120,
@@ -44,9 +76,12 @@ def sync_calendar_changes(
 
     try:
         # -------------------------
-        # TODO: fetch remote events
+        # Fetch remote events
         # -------------------------
-        remote_events = []
+        service = get_calendar_service()
+        remote_events = _fetch_remote_events(
+            service, calendar_id, lookback_minutes
+        )
 
         # -------------------------
         # TODO: fetch local DB rows
@@ -57,7 +92,7 @@ def sync_calendar_changes(
         # TODO: diff & detect changes
         # -------------------------
         created = updated = deleted = 0
-        checked = 0
+        checked = len(remote_events)
 
         # -------------------------
         # TODO: apply DB updates
