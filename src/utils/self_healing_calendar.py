@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, Any
 
 from src.utils.google_auth import get_calendar_service
-from src.utils.db_handler import get_connection
+from src.utils.db_handler import get_db_connection
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +45,92 @@ def _fetch_remote_events(service, calendar_id: str, lookback_minutes: int):
             break
 
     return events
+
+def _fetch_local_events(conn, lookback_minutes: int):
+    """
+    Fetch meetings updated recently from local DB.
+
+    Returns dict indexed by google_event_id.
+    """
+
+    cursor = conn.cursor()
+
+    query = """
+        SELECT *
+        FROM meetings
+        WHERE updated_at >= NOW() - (%s || ' minutes')::interval;
+    """
+
+    cursor.execute(query, (lookback_minutes,))
+    rows = cursor.fetchall()
+
+    cursor.close()
+
+    return {row["google_event_id"]: row for row in rows}
+
+def _diff_events(remote_events, local_events):
+    """
+    Compare Google events vs DB records.
+
+    Returns dict with create / update / delete lists.
+    """
+
+    to_create = []
+    to_update = []
+    to_delete = []
+
+    for event in remote_events:
+        event_id = event.get("id")
+        status = event.get("status")
+
+        if not event_id:
+            continue
+
+        db_row = local_events.get(event_id)
+
+        # ---- Cancelled remotely ----
+        if status == "cancelled":
+            if db_row:
+                to_delete.append(db_row)
+            continue
+
+        title = event.get("summary", "")
+        start = event.get("start", {}).get("dateTime")
+        end = event.get("end", {}).get("dateTime")
+        meet_link = event.get("hangoutLink")
+        organizer = event.get("organizer", {}).get("email")
+
+        # ---- New meeting ----
+        if not db_row:
+            to_create.append(event)
+            continue
+
+        # ---- Compare for updates ----
+        changed = False
+
+        if title != db_row["title"]:
+            changed = True
+
+        if start and db_row["start_time"].isoformat() != start:
+            changed = True
+
+        if end and db_row["end_time"].isoformat() != end:
+            changed = True
+
+        if meet_link != db_row["meet_link"]:
+            changed = True
+
+        if organizer != db_row["organizer_email"]:
+            changed = True
+
+        if changed:
+            to_update.append(event)
+
+    return {
+        "create": to_create,
+        "update": to_update,
+        "delete": to_delete,
+    }
 
 
 def sync_calendar_changes(
@@ -84,14 +170,19 @@ def sync_calendar_changes(
         )
 
         # -------------------------
-        # TODO: fetch local DB rows
+        # Fetch local DB rows
         # -------------------------
-        local_events = {}
+        conn = get_db_connection()
+        local_events = _fetch_local_events(conn, lookback_minutes)
 
         # -------------------------
         # TODO: diff & detect changes
         # -------------------------
-        created = updated = deleted = 0
+        diff = _diff_events(remote_events, local_events)
+
+        created = len(diff["create"])
+        updated = len(diff["update"])
+        deleted = len(diff["delete"])
         checked = len(remote_events)
 
         # -------------------------
