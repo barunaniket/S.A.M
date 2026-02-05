@@ -58,7 +58,7 @@ def _fetch_local_events(conn, lookback_minutes: int):
     query = """
         SELECT *
         FROM meetings
-        WHERE updated_at >= NOW() - (%s || ' minutes')::interval;
+        WHERE created_at >= NOW() - (%s || ' minutes')::interval;
     """
 
     cursor.execute(query, (lookback_minutes,))
@@ -66,7 +66,8 @@ def _fetch_local_events(conn, lookback_minutes: int):
 
     cursor.close()
 
-    return {row["google_event_id"]: row for row in rows}
+    return {row["meeting_id"]: row for row in rows}
+
 
 def _diff_events(remote_events, local_events):
     """
@@ -131,6 +132,138 @@ def _diff_events(remote_events, local_events):
         "update": to_update,
         "delete": to_delete,
     }
+    
+    
+def _log_activity(cursor, action_type, meeting_id, details):
+    cursor.execute(
+        """
+        INSERT INTO activity_log (action_type, meeting_id, details)
+        VALUES (%s, %s, %s);
+        """,
+        (action_type, meeting_id, details),
+    )
+
+
+def _apply_creates(conn, events):
+    cursor = conn.cursor()
+
+    for event in events:
+        cursor.execute(
+            """
+            INSERT INTO meetings
+                (meeting_id, title, start_time, end_time,
+                 organizer_email, meet_link)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING id;
+            """,
+            (
+                event.get("id"),
+                event.get("summary"),
+                event["start"]["dateTime"],
+                event["end"]["dateTime"],
+                event.get("organizer", {}).get("email"),
+                event.get("hangoutLink"),
+            ),
+        )
+
+        meeting_pk = cursor.fetchone()[0]
+
+        for attendee in event.get("attendees", []):
+            cursor.execute(
+                """
+                INSERT INTO meeting_participants
+                    (meeting_id, participant_name, participant_email)
+                VALUES (%s, %s, %s);
+                """,
+                (
+                    meeting_pk,
+                    attendee.get("displayName"),
+                    attendee.get("email"),
+                ),
+            )
+
+        _log_activity(
+            cursor,
+            "CREATE",
+            meeting_pk,
+            f"Created from Google event {event.get('id')}",
+        )
+
+
+def _apply_updates(conn, events):
+    cursor = conn.cursor()
+
+    for event in events:
+        cursor.execute(
+            """
+            UPDATE meetings
+            SET title=%s,
+                start_time=%s,
+                end_time=%s,
+                organizer_email=%s,
+                meet_link=%s
+            WHERE meeting_id=%s
+            RETURNING id;
+            """,
+            (
+                event.get("summary"),
+                event["start"]["dateTime"],
+                event["end"]["dateTime"],
+                event.get("organizer", {}).get("email"),
+                event.get("hangoutLink"),
+                event.get("id"),
+            ),
+        )
+
+        row = cursor.fetchone()
+        if not row:
+            continue
+
+        meeting_pk = row[0]
+
+        cursor.execute(
+            "DELETE FROM meeting_participants WHERE meeting_id=%s;",
+            (meeting_pk,),
+        )
+
+        for attendee in event.get("attendees", []):
+            cursor.execute(
+                """
+                INSERT INTO meeting_participants
+                    (meeting_id, participant_name, participant_email)
+                VALUES (%s, %s, %s);
+                """,
+                (
+                    meeting_pk,
+                    attendee.get("displayName"),
+                    attendee.get("email"),
+                ),
+            )
+
+        _log_activity(
+            cursor,
+            "UPDATE",
+            meeting_pk,
+            f"Updated from Google event {event.get('id')}",
+        )
+
+
+def _apply_deletes(conn, rows):
+    cursor = conn.cursor()
+
+    for row in rows:
+        cursor.execute(
+            "DELETE FROM meetings WHERE id=%s;",
+            (row["id"],),
+        )
+
+        _log_activity(
+            cursor,
+            "DELETE",
+            row["id"],
+            f"Deleted due to cancellation in Google Calendar",
+        )
+ 
 
 
 def sync_calendar_changes(
@@ -185,9 +318,12 @@ def sync_calendar_changes(
         deleted = len(diff["delete"])
         checked = len(remote_events)
 
-        # -------------------------
-        # TODO: apply DB updates
-        # -------------------------
+        _apply_creates(conn, diff["create"])
+        _apply_updates(conn, diff["update"])
+        _apply_deletes(conn, diff["delete"])
+        
+        conn.commit()
+        conn.close()
 
         result = {
             "success": True,
