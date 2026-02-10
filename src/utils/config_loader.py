@@ -20,6 +20,7 @@ REQUIRED_KEYS = [
     "GOOGLE_API_SCOPES",
     "SENDER_EMAIL",
     "SENDER_PASSWORD",
+    "GEMINI_API_KEY",
     "DATABASE_URL"
 ]
 
@@ -41,6 +42,9 @@ class Config:
     # Email Credentials
     SENDER_EMAIL = os.getenv("SENDER_EMAIL")
     SENDER_PASSWORD = os.getenv("SENDER_PASSWORD")
+
+    # AI Model
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
     # Database POSTGRES
     DATABASE_URL = os.getenv("DATABASE_URL")
