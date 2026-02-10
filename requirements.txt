@@ -9,3 +9,4 @@ dateparser
 python-dateutil
 psycopg2-binary
 pytz
+google-genai
