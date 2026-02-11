@@ -14,7 +14,7 @@ fastapi
 uvicorn[standard]
 sqlalchemy
 asyncpg
-redis
+redis>=4.5.0
 celery
 httpx
 pydantic-settings
