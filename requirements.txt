@@ -10,3 +10,15 @@ python-dateutil
 psycopg2-binary
 pytz
 google-genai
+
+fastapi
+uvicorn[standard]
+sqlalchemy
+asyncpg
+redis
+celery
+httpx
+pydantic-settings
+alembic
+python-jose[cryptography]
+passlib[bcrypt]
