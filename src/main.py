@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from src.api.routes import auth
 
 # Initialize the App
 app = FastAPI(title="S.A.M. Faculty Platform", version="2.0")
@@ -12,6 +13,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(auth.router)
 
 # A simple Health Check endpoint
 @app.get("/")
