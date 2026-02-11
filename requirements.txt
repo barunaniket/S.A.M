@@ -10,7 +10,6 @@ python-dateutil
 psycopg2-binary
 pytz
 google-genai
-
 fastapi
 uvicorn[standard]
 sqlalchemy
