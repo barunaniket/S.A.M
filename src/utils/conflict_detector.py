@@ -1,61 +1,59 @@
 """
-This file basically check krega ki user kee google calender
-me ek defined time slot me koi dusra event clash toh nahi
-kar rha hai na
+conflict_detector.py
+--------------------
+Check a user's Google Calendar for conflicting events in a given time slot.
 """
 
-import datetime
-from .google_auth import get_calendar_service
+from src.utils.google_auth import get_calendar_service
 
-def check_scheduler_conflict(scheduler_email: str, start_datetime: str, end_datetime: str) -> bool:
+
+def check_scheduler_conflict(
+    scheduler_email: str,
+    start_datetime: str,
+    end_datetime: str,
+) -> bool:
     """
-    Checks the scheduler's Google Calendar for any blocking events during the requested time slot.
+    Return True if the scheduler has a blocking event in the requested slot.
 
-    Args:
-        scheduler_email (str): The email of the user to check (used for context/logging).
-        start_datetime (str): ISO 8601 start time (e.g., "2025-01-27T15:00:00").
-        end_datetime (str): ISO 8601 end time (e.g., "2025-01-27T16:00:00").
-
-    Returns:
-        bool: True if a conflict exists (BUSY), False if the slot is free.
+    Parameters
+    ----------
+    scheduler_email : str  — email used to fetch stored OAuth credentials
+    start_datetime  : str  — ISO 8601 start (e.g. "2026-04-04T15:00:00")
+    end_datetime    : str  — ISO 8601 end   (e.g. "2026-04-04T16:00:00")
     """
     try:
-        service = get_calendar_service()
+        service = get_calendar_service(user_email=scheduler_email)
 
-        time_min = start_datetime if 'Z' in start_datetime or '+' in start_datetime else f"{start_datetime}Z"
-        time_max = end_datetime if 'Z' in end_datetime or '+' in end_datetime else f"{end_datetime}Z"
+        # Ensure timestamps have a timezone indicator for the Google API
+        def _ensure_tz(dt: str) -> str:
+            if dt and not any(c in dt for c in ("Z", "+", "-", "T")):
+                return dt + "Z"
+            if "T" in dt and "Z" not in dt and "+" not in dt and dt.count("-") == 2:
+                return dt + "Z"
+            return dt
+
+        time_min = _ensure_tz(start_datetime)
+        time_max = _ensure_tz(end_datetime)
 
         events_result = service.events().list(
-            calendarId='primary', 
+            calendarId="primary",
             timeMin=time_min,
             timeMax=time_max,
             singleEvents=True,
-            orderBy='startTime'
+            orderBy="startTime",
         ).execute()
 
-        events = events_result.get('items', [])
+        events = events_result.get("items", [])
 
-        if not events:
-            return False
-        
         for event in events:
-            if event.get('transparency') == 'transparent':
+            # "transparent" events are show-as-free and should not block
+            if event.get("transparency") == "transparent":
                 continue
-            
-            print(f"Conflict detected: {event.get('summary', 'Unknown Event')} at {event['start'].get('dateTime', 'All Day')}")
-            return True
+            return True   # found at least one blocking event
 
         return False
 
     except Exception as e:
-        print(f"Error checking conflicts for {scheduler_email}: {str(e)}")
+        # Fail-safe: treat errors as conflicts to avoid double-booking
+        print(f"[conflict_detector] Error checking conflicts for {scheduler_email}: {e}")
         return True
-    
-"""
-isko use kaise karna hai?
-
-from utils.conflict_detector import check_scheduler_conflict
-
-if check_scheduler_conflict(scheduler_email, start_time, end_time):
-    return {"success": False, "error": "Conflict detected"}
-"""

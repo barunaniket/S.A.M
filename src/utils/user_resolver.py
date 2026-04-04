@@ -1,68 +1,69 @@
 """
-so yea wali file tum logo koo help kregi easily
-user names extract krne me. tests/test_resolver.py
-me iska demo hai
+user_resolver.py
+----------------
+Resolve human-readable display names to DB faculty records using fuzzy matching.
 """
 
 from functools import lru_cache
 from thefuzz import process
-from utils.db_handler import get_all_faculty
+
+from src.utils.db_handler import get_all_faculty
+
 
 @lru_cache(maxsize=1)
-def get_cached_faculty():
+def _get_cached_faculty():
     """
-    Fetches faculty data once and stores it in memory.
-    Useful for batch processing (e.g., resolving 5 participants at once).
-    
-    NOTE: In a long-running web server (FastAPI), you would use a 
-    Time-To-Live (TTL) cache instead so it refreshes periodically.
+    Fetch all faculty once and cache in memory.
+    Call invalidate_faculty_cache() when the faculty table changes.
     """
     return get_all_faculty()
 
-def resolve_faculty_member(name_query, threshold=75):
+
+def invalidate_faculty_cache():
+    """Clear the in-memory faculty cache so the next call re-fetches from DB."""
+    _get_cached_faculty.cache_clear()
+
+
+def resolve_faculty_member(name_query: str, threshold: int = 75):
     """
-    Takes a name (e.g., "Sharma" or "Aniket") and finds the best match
-    using the cached faculty list.
+    Fuzzy-match a name string against the faculty list.
+
+    Parameters
+    ----------
+    name_query : str  — the name as typed/spoken (e.g. "Sharma", "Aniket")
+    threshold  : int  — minimum fuzz score to accept a match (0-100)
+
+    Returns the matching faculty dict, or None if no strong match found.
     """
-    all_faculty = get_cached_faculty()
-    
+    all_faculty = _get_cached_faculty()
+
     if not all_faculty:
-        print("Warning: Database is empty.")
         return None
 
-    faculty_map = {person['name']: person for person in all_faculty}
+    faculty_map = {person["name"]: person for person in all_faculty}
     names_list = list(faculty_map.keys())
+
     match_result = process.extractOne(name_query, names_list)
-    
-    if match_result:
-        best_match_name, score = match_result
-        
-        if score >= threshold:
-            return faculty_map[best_match_name]
-        else:
-            print(f"❌ No strong match for '{name_query}' (Best: {best_match_name}, Score: {score})")
-            return None
-            
+
+    if not match_result:
+        return None
+
+    best_match_name, score = match_result
+
+    if score >= threshold:
+        return faculty_map[best_match_name]
+
     return None
 
-def resolve_participants(names_list):
+
+def resolve_participants(names_list: list) -> list:
     """
-    Wrapper to handle a list of names.
+    Resolve a list of display names to faculty dicts.
+    Names that don't match are silently skipped.
     """
-    resolved_users = []
+    resolved = []
     for name in names_list:
         user = resolve_faculty_member(name)
         if user:
-            resolved_users.append(user)      
-    return resolved_users
-
-'''
-how to use this?
-
-from utils.db_handler import get_all_faculty
-#first import krna
-
-gemini_output_names = ["Ani", "ayuss", "Bismun", "Kishan", "mayank KD" ,"NonExistentPerson"]
-#lets say the above are the names
-#iske baad tests/test_resolver.py koo refer krna
-'''
+            resolved.append(user)
+    return resolved

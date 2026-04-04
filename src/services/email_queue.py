@@ -1,60 +1,71 @@
 import json
-import time 
+import os
+import smtplib
+import time
+from email.message import EmailMessage
+
 import redis
-from utils.config_loader import get_env
-from utils.email_sender import send_email
 
-# Redis connection (shared)
+from src.utils.config_loader import Config
 
-def get_redis_client():
-    """
-    Create and return a Redis client.
-    """
-    return redis.Redis(
-        host=get_env("REDIS_HOST", "redis"),
-        port=int(get_env("REDIS_PORT", 6379)),
-        decode_responses=True  # return bytes not strings
+
+def _get_redis_client():
+    return redis.Redis.from_url(
+        os.getenv("REDIS_URL", "redis://redis:6379/0"),
+        decode_responses=True
     )
 
-# queue email into redis server
 
-def queue_email(to_addr: str, subject: str, body: str, metadata: dict):
-    # this function pushes email into redis queue
+def _send_email_smtp(to_addr: str, subject: str, body: str):
+    """Send a plain-text email via Gmail SMTP."""
+    msg = EmailMessage()
+    msg["From"] = Config.SENDER_EMAIL
+    msg["To"] = to_addr
+    msg["Subject"] = subject
+    msg.set_content(body)
 
-    redis_client = get_redis_client()
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(Config.SENDER_EMAIL, Config.SENDER_PASSWORD)
+        server.send_message(msg)
 
-    email_job = {
-        "to":to_addr,
-        "subject":subject,
-        "body":body,
-        "metadata":metadata
+
+def queue_email(to_addr: str, subject: str, body: str, metadata: dict = None):
+    """Push an email job onto the Redis queue."""
+    client = _get_redis_client()
+    job = {
+        "to": to_addr,
+        "subject": subject,
+        "body": body,
+        "metadata": metadata or {},
     }
+    client.lpush("email_queue", json.dumps(job))
 
-    redis_client.lpush("email_queue",json.dumps(email_job))
-
-
-# backend processing of emails
 
 def process_email_queue():
-    redis_client = get_redis_client()
+    """
+    Blocking worker loop — pops jobs from Redis and sends them.
+    Run this in a separate process (e.g. via Celery or a background thread).
+    """
+    client = _get_redis_client()
+
     while True:
-        job_data = redis_client("email_queue")
+        # rpop returns None when the queue is empty
+        job_data = client.rpop("email_queue")
+
         if not job_data:
             time.sleep(1)
             continue
-        # converting json format to dict format
+
         email_job = json.loads(job_data)
+
         try:
-            # sending email
-            send_email(
+            _send_email_smtp(
                 to_addr=email_job["to"],
                 subject=email_job["subject"],
-                body=email_job["body"]
+                body=email_job["body"],
             )
         except Exception as e:
-            # Retry logic (push back into queue)
-            print(f"Email sending failed: {e}")
-            redis_client.lpush("email_queue", job_data)
+            print(f"Email sending failed: {e} — re-queuing")
+            # Push failed job back to the end of the queue for retry
+            client.lpush("email_queue", job_data)
             time.sleep(5)
-        
-

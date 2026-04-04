@@ -1,19 +1,39 @@
 import uvicorn
-from fastapi import FastAPI, Depends, Request  # <--- Added 'Request' here
+from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBearer 
+from fastapi.security import HTTPBearer
+from starlette.middleware.base import BaseHTTPMiddleware
 
-# Import your routes and the new middleware
-from src.api.routes import auth
+# Core utilities
 from src.utils.middleware import verify_jwt_middleware
 
-# Initialize the App
-app = FastAPI(title="S.A.M. Faculty Platform", version="2.0")
+# Route modules
+from src.api.routes import auth
+from src.api import lifecycle_routes
+from src.api.routes import (
+    meetings,
+    availability,
+    agenda,
+    process,
+    notifications,
+    email as email_routes,
+    calendar as calendar_routes,
+    analytics,
+    ws_notifications,
+)
 
-# 1. REGISTER THE MIDDLEWARE
-app.middleware("http")(verify_jwt_middleware)
+# ---------------------------------------------------------------------------
+# App init
+# ---------------------------------------------------------------------------
+app = FastAPI(
+    title="S.A.M. Faculty Platform",
+    version="2.0",
+    description="Smart Administrative Messenger — backend API for the faculty scheduling platform",
+)
 
-# Enable CORS
+# ---------------------------------------------------------------------------
+# Middleware (order matters: CORS first, then JWT)
+# ---------------------------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
@@ -21,30 +41,43 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.include_router(
-    lifecycle_routes.router,
-    prefix="/api/v1/experimental",
-    tags=["Lifecycle Validation"]
-)
-app.include_router(auth.router)
 
-# 2. ADD SWAGGER UI SECURITY SCHEME
+app.add_middleware(BaseHTTPMiddleware, dispatch=verify_jwt_middleware)
+
+# ---------------------------------------------------------------------------
+# Routers
+# ---------------------------------------------------------------------------
+app.include_router(auth.router)                                         # /auth/*
+app.include_router(lifecycle_routes.router, prefix="/api/v1/experimental", tags=["Lifecycle"])
+app.include_router(meetings.router,       prefix="/api/v1", tags=["Meetings"])
+app.include_router(availability.router,   prefix="/api/v1", tags=["Availability"])
+app.include_router(agenda.router,         prefix="/api/v1", tags=["Agenda"])
+app.include_router(process.router,        prefix="/api/v1", tags=["LLM Processing"])
+app.include_router(notifications.router,  prefix="/api/v1", tags=["Notifications"])
+app.include_router(email_routes.router,   prefix="/api/v1", tags=["Email"])
+app.include_router(calendar_routes.router,   prefix="/api/v1", tags=["Calendar Sync"])
+app.include_router(analytics.router,         prefix="/api/v1", tags=["Analytics"])
+app.include_router(ws_notifications.router,  prefix="/api/v1", tags=["WebSocket"])
+
+# ---------------------------------------------------------------------------
+# Health check
+# ---------------------------------------------------------------------------
 security = HTTPBearer()
 
-@app.get("/")
+@app.get("/", tags=["Health"])
 async def health_check():
     return {"status": "ok", "message": "S.A.M. API is running"}
 
-# 3. ADD A PROTECTED TEST ROUTE
-@app.get("/api/test-secure", dependencies=[Depends(security)])
-async def test_secure_endpoint(request: Request): 
-    # If the middleware works, this code ONLY runs if the token is valid.
+
+@app.get("/api/test-secure", tags=["Health"], dependencies=[Depends(security)])
+async def test_secure_endpoint(request: Request):
     return {
         "status": "Authorized",
         "user_id": request.state.user_id,
         "org_id": request.state.org_id,
-        "message": "You have successfully passed the Gatekeeper!"
+        "message": "JWT validated successfully",
     }
+
 
 if __name__ == "__main__":
     uvicorn.run("src.main:app", host="0.0.0.0", port=8000, reload=True)
