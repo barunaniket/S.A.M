@@ -1,115 +1,163 @@
-"""
-noyb 
-stay away from this file
-chuna bhi nahi
-"""
 import psycopg2
+from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
+from contextlib import contextmanager
 from utils.config_loader import Config
+import threading
+from typing import Optional
 
-def get_db_connection():
-    conn = psycopg2.connect(Config.DATABASE_URL, cursor_factory=RealDictCursor)
-    return conn
 
-def init_db():
+# ======================================================
+# CONNECTION POOL (Thread Safe – FastAPI Compatible)
+# ======================================================
+
+_connection_pool: Optional[pool.SimpleConnectionPool] = None
+_pool_lock = threading.Lock()
+
+
+def init_connection_pool():
+    global _connection_pool
+    with _pool_lock:
+        if _connection_pool is None:
+            _connection_pool = pool.SimpleConnectionPool(
+                minconn=2,
+                maxconn=20,
+                dsn=Config.DATABASE_URL,
+                cursor_factory=RealDictCursor
+            )
+
+
+def get_pool():
+    if _connection_pool is None:
+        init_connection_pool()
+    return _connection_pool
+
+
+# ======================================================
+# INTERNAL CONNECTION (NO RLS) – USE CAREFULLY
+# Only for organizations table or bootstrap logic
+# ======================================================
+
+@contextmanager
+def get_system_db():
     """
-    Creates the Faculty table (Removed google_calendar_email).
+    Use ONLY for:
+    - organizations lookup
+    - bootstrap operations
+
+    RLS is NOT applied here.
     """
-    create_table_query = """
-    CREATE TABLE IF NOT EXISTS faculty (
-        id SERIAL PRIMARY KEY,
-        name VARCHAR(100) NOT NULL,
-        email VARCHAR(100) UNIQUE NOT NULL,
-        phone VARCHAR(20),
-        department VARCHAR(50),
-        role VARCHAR(50),
-        is_active BOOLEAN DEFAULT TRUE,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    """
+    pool = get_pool()
+    conn = pool.getconn()
+
     try:
-        conn = get_db_connection()
+        conn.autocommit = False
         cur = conn.cursor()
-        cur.execute(create_table_query)
+        yield cur
         conn.commit()
-        print("Database initialized: Faculty table ready.")
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
         cur.close()
-        conn.close()
-    except Exception as e:
-        print(f"Error initializing DB: {e}")
+        pool.putconn(conn)
 
-def get_all_faculty():
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM faculty WHERE is_active = TRUE;")
-        faculty_list = cur.fetchall()
-        cur.close()
-        conn.close()
-        return [dict(row) for row in faculty_list]
-    except Exception as e:
-        print(f"Error fetching faculty: {e}")
-        return []
 
-def add_faculty_member(name, email, phone, dept, role):
+# ======================================================
+# TENANT-AWARE DB CONTEXT (RLS ENFORCED)
+# ======================================================
+
+@contextmanager
+def get_db(org_id: int):
     """
-    Adds a faculty member (5 arguments only).
+    Secure DB session with tenant isolation.
+
+    - Injects app.org_id into PostgreSQL session.
+    - Enforces RLS automatically.
+    - Commits on success.
+    - Rolls back on failure.
     """
-    insert_query = """
-    INSERT INTO faculty (name, email, phone, department, role)
-    VALUES (%s, %s, %s, %s, %s)
-    RETURNING id;
+
+    if not isinstance(org_id, int):
+        raise ValueError("org_id must be a valid integer")
+
+    pool = get_pool()
+    conn = pool.getconn()
+
+    try:
+        conn.autocommit = False
+        cur = conn.cursor()
+
+        # Inject tenant context for RLS
+        cur.execute("SET LOCAL app.org_id = %s;", (str(org_id),))
+
+        yield cur
+
+        conn.commit()
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        cur.close()
+        pool.putconn(conn)
+
+
+# ======================================================
+# HELPER FUNCTIONS (DAL LAYER)
+# ======================================================
+
+def create_user(email: str, full_name: str, role: str, invite_code: str) -> int:
     """
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute(insert_query, (name, email, phone, dept, role))
-        new_id = cur.fetchone()['id']
-        conn.commit()
-        print(f"Added faculty member ID: {new_id}")
-        cur.close()
-        conn.close()
-        return new_id
-    except Exception as e:
-        print(f"Error adding faculty: {e}")
-        return None
+    Transactional user creation.
 
-def update_faculty_member(faculty_id, **kwargs):
-    allowed_keys = {'name', 'email', 'phone', 'department', 'role', 'is_active'}
-    updates = {k: v for k, v in kwargs.items() if k in allowed_keys}
-    
-    if not updates:
-        print("No valid fields to update.")
-        return False
+    1. Validate invite code.
+    2. Fetch org_id.
+    3. Insert user under tenant context.
+    """
 
-    set_clause = ", ".join([f"{key} = %s" for key in updates.keys()])
-    values = list(updates.values())
-    values.append(faculty_id)
+    if role not in ("ADMIN", "FACULTY"):
+        raise ValueError("Invalid role")
 
-    query = f"UPDATE faculty SET {set_clause} WHERE id = %s;"
+    # Step 1: Validate invite code (system-level access)
+    with get_system_db() as cur:
+        cur.execute(
+            "SELECT id FROM organizations WHERE invite_code = %s;",
+            (invite_code,)
+        )
+        org = cur.fetchone()
 
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute(query, tuple(values))
-        conn.commit()
-        success = True if cur.rowcount > 0 else False
-        cur.close()
-        conn.close()
-        return success
-    except Exception as e:
-        print(f"Error updating faculty: {e}")
-        return False
+        if not org:
+            raise ValueError("Invalid invite code")
 
-def clear_faculty_table():
-    sql_query = "TRUNCATE TABLE faculty RESTART IDENTITY CASCADE;"
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute(sql_query)
-        conn.commit()
-        print("Success: Faculty table cleared and IDs reset.")
-        cur.close()
-        conn.close()
-    except Exception as e:
-        print(f"Error clearing table: {e}")
+        org_id = org["id"]
+
+    # Step 2: Insert user under RLS context
+    with get_db(org_id) as cur:
+        cur.execute("""
+            INSERT INTO users (org_id, email, full_name, role)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id;
+        """, (org_id, email, full_name, role))
+
+        return cur.fetchone()["id"]
+
+
+def log_audit_action(org_id: int, user_id: Optional[int],
+                     action: str, metadata: Optional[dict] = None):
+    """
+    Insert audit log entry.
+
+    - RLS protected
+    - JSONB metadata supported
+    """
+
+    if not action:
+        raise ValueError("Action must be provided")
+
+    with get_db(org_id) as cur:
+        cur.execute("""
+            INSERT INTO audit_logs (org_id, user_id, action, metadata)
+            VALUES (%s, %s, %s, %s);
+        """, (org_id, user_id, action, metadata))
