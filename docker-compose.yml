@@ -23,6 +23,7 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+      
 
   # 3. The Backend API (FastAPI)
   backend:

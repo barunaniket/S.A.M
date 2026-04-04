@@ -21,7 +21,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+app.include_router(
+    lifecycle_routes.router,
+    prefix="/api/v1/experimental",
+    tags=["Lifecycle Validation"]
+)
 app.include_router(auth.router)
 
 # 2. ADD SWAGGER UI SECURITY SCHEME
