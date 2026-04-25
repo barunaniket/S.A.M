@@ -201,9 +201,32 @@ def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
     with get_system_db() as cur:
         cur.execute(
             """SELECT id, org_id, email, full_name, picture_url, role,
+                      phone_number, department,
                       access_token, encrypted_refresh_token
                FROM users WHERE email = %s;""",
             (email,)
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def get_user_by_phone(phone_digits: str) -> Optional[Dict[str, Any]]:
+    """
+    Look up a user by phone number digits (system-level, no RLS).
+    Matches both exact and 10-digit suffix.
+    Returns None if not found.
+    """
+    if not phone_digits:
+        return None
+    with get_system_db() as cur:
+        cur.execute(
+            """SELECT id, org_id, email, full_name, role,
+                      phone_number, department
+               FROM users
+               WHERE regexp_replace(phone_number, '[^0-9]', '', 'g') = %s
+                  OR regexp_replace(phone_number, '[^0-9]', '', 'g') LIKE %s
+               LIMIT 1;""",
+            (phone_digits, f"%{phone_digits[-10:]}"),
         )
         row = cur.fetchone()
         return dict(row) if row else None
