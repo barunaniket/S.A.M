@@ -20,6 +20,10 @@ from src.api.routes import (
     calendar as calendar_routes,
     analytics,
     ws_notifications,
+    uploads,
+    whatsapp,
+    groups,
+    health,
 )
 
 # ---------------------------------------------------------------------------
@@ -58,6 +62,10 @@ app.include_router(email_routes.router,   prefix="/api/v1", tags=["Email"])
 app.include_router(calendar_routes.router,   prefix="/api/v1", tags=["Calendar Sync"])
 app.include_router(analytics.router,         prefix="/api/v1", tags=["Analytics"])
 app.include_router(ws_notifications.router,  prefix="/api/v1", tags=["WebSocket"])
+app.include_router(uploads.router,            prefix="/api/v1", tags=["Uploads"])
+app.include_router(groups.router,             prefix="/api/v1", tags=["Groups"])
+app.include_router(whatsapp.router,                              tags=["WhatsApp Webhook"])  # mounted at /webhooks/whatsapp
+app.include_router(health.router,             prefix="/api/v1", tags=["Health"])
 
 # ---------------------------------------------------------------------------
 # Health check

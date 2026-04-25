@@ -19,6 +19,7 @@ Thumbs.db
 /documentation unfiltered
 *.ics
 generated_meetings/
+data/uploads/
 *.egg-info/
 /.pytest_cache
 AGENTS.md

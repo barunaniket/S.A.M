@@ -58,14 +58,15 @@ async def api_execute_intent(body: ProcessRequest, request: Request):
     Feature 1 — End-to-end NLP orchestrator.
 
     Send a natural-language command and S.A.M. will:
-      1. Parse the intent (Gemini)
-      2. Execute the corresponding action (create / reschedule / cancel / list / email)
+      1. Parse the intent (NVIDIA / OpenAI-compatible LLM)
+      2. Execute the corresponding action (create / reschedule / cancel / list / email / broadcast)
       3. Trigger notifications automatically
       4. Return the combined result
 
     Requires a valid JWT with the user's email.
     """
     scheduler_email = getattr(request.state, "email", None)
+    org_id          = getattr(request.state, "org_id", None)
     if not scheduler_email:
         raise HTTPException(
             status_code=400,
@@ -81,7 +82,7 @@ async def api_execute_intent(body: ProcessRequest, request: Request):
     if intent_result.get("intent") == "error":
         raise HTTPException(status_code=500, detail=intent_result.get("message"))
 
-    result = route_intent(intent_result, scheduler_email)
+    result = route_intent(intent_result, scheduler_email, org_id=org_id)
 
     return {
         "intent":  intent_result,
