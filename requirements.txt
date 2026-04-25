@@ -11,7 +11,7 @@ dateparser
 python-dateutil
 psycopg2-binary
 pytz
-google-genai
+openai>=1.40.0
 fastapi
 uvicorn[standard]
 sqlalchemy
@@ -24,3 +24,8 @@ alembic
 python-jose[cryptography]
 passlib[bcrypt]
 pyjwt
+python-multipart
+pandas
+openpyxl
+pypdf
+python-docx

@@ -19,8 +19,12 @@ REQUIRED_KEYS = [
     "GOOGLE_API_SCOPES",
     "SENDER_EMAIL",
     "SENDER_PASSWORD",
-    "GEMINI_API_KEY",
-    "DATABASE_URL"
+    "NVIDIA_API_KEY",
+    "DATABASE_URL",
+    "WHATSAPP_PHONE_NUMBER_ID",
+    "WHATSAPP_ACCESS_TOKEN",
+    "WHATSAPP_VERIFY_TOKEN",
+    "WHATSAPP_APP_SECRET",
 ]
 
 class Config:
@@ -42,8 +46,22 @@ class Config:
     SENDER_EMAIL = os.getenv("SENDER_EMAIL")
     SENDER_PASSWORD = os.getenv("SENDER_PASSWORD")
 
-    # AI Model
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+    # AI Model — NVIDIA OpenAI-compatible endpoint (default model is a Gemma
+    # variant served by NVIDIA; can be swapped via NVIDIA_MODEL_ID in .env).
+    NVIDIA_API_KEY  = os.getenv("NVIDIA_API_KEY")
+    NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
+    NVIDIA_MODEL_ID = os.getenv("NVIDIA_MODEL_ID", "google/gemma-3-27b-it")
+    GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY")  # kept for optional Google-direct usage
+
+    # WhatsApp (Meta Cloud API)
+    WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
+    WHATSAPP_ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN")
+    WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
+    WHATSAPP_APP_SECRET = os.getenv("WHATSAPP_APP_SECRET")
+    WHATSAPP_GRAPH_VERSION = os.getenv("WHATSAPP_GRAPH_VERSION", "v20.0")
+
+    # Uploads
+    UPLOAD_DIR = os.getenv("UPLOAD_DIR", "data/uploads")
 
     # Database
     DATABASE_URL = os.getenv("DATABASE_URL")
@@ -89,30 +107,35 @@ def sanitize_text(text: str) -> str:
 
 class _LLMClient:
     """
-    Thin wrapper around the Google GenAI client so service modules can call
-    client.generate(system_prompt=..., user_prompt=...) without knowing the
-    underlying SDK details.
+    Thin wrapper around the NVIDIA OpenAI-compatible inference endpoint so
+    service modules can call client.generate(system_prompt=..., user_prompt=...)
+    without knowing the underlying SDK details.
     """
 
     def __init__(self):
-        from google import genai
-        from google.genai import types as genai_types
-        self._genai_types = genai_types
-        self._client = genai.Client(api_key=Config.GEMINI_API_KEY)
-        self._model_id = "gemini-2.0-flash-lite-preview-02-05"
+        from openai import OpenAI
+        self._client = OpenAI(
+            base_url=Config.NVIDIA_BASE_URL,
+            api_key=Config.NVIDIA_API_KEY,
+        )
+        self._model_id = Config.NVIDIA_MODEL_ID
 
     def generate(self, system_prompt: str, user_prompt: str) -> str:
         """
-        Returns the text response from Gemini given a system + user prompt.
+        Returns the text response from the LLM given a system + user prompt.
         Raises on API errors — callers should handle exceptions.
         """
-        full_prompt = f"{system_prompt}\n\n{user_prompt}"
-        response = self._client.models.generate_content(
+        response = self._client.chat.completions.create(
             model=self._model_id,
-            contents=full_prompt,
-            config=self._genai_types.GenerateContentConfig(temperature=0.0),
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.0,
+            top_p=1,
+            max_tokens=2048,
         )
-        return response.text
+        return response.choices[0].message.content if response.choices else ""
 
 
 def get_llm_client() -> _LLMClient:
