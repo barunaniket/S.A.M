@@ -1,0 +1,54 @@
+# Keep the build context small and prevent secrets / local state from
+# being baked into the image. docker-compose still mounts the host
+# directory at runtime, so dev workflows are unaffected.
+
+# VCS
+.git
+.gitignore
+.gitattributes
+
+# Local env / secrets — must come from runtime env_file, not the image
+.env
+.env.*
+!.env.example
+
+# Virtualenvs / Python build artefacts
+.venv
+venv
+env
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.egg-info
+build
+dist
+.eggs
+
+# Test / lint caches
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+.tox
+
+# Editor / OS
+.idea
+.vscode
+*.swp
+.DS_Store
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# Project-local runtime data — recreated inside the container by
+# `mkdir -p $UPLOAD_DIR`, no need to ship the host's copy.
+data/uploads
+
+# Documentation that doesn't need to ship
+README.md
+LICENSE
+"documentation unfiltered"
