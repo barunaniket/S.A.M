@@ -6,18 +6,21 @@ from src.utils.config_loader import Config
 SECRET_KEY = Config.SECRET_KEY
 ALGORITHM = Config.ALGORITHM
 
-# Paths that never require a JWT — exact match or prefix match
+# Paths that never require a JWT — prefix match.
+# NOTE: do NOT add "/" here — every path starts with "/", which would
+# silently bypass auth for the entire API. The exact-match "/" health check
+# is handled in _is_excluded below.
 _EXCLUDED_PREFIXES = (
     "/docs",
     "/openapi.json",
     "/redoc",
     "/auth/",          # all /auth/* endpoints (login-url, callback)
-    "/",               # health check exact match handled below
+    "/webhooks/",      # provider webhooks — verified per-provider, not via JWT
 )
 
 
 def _is_excluded(path: str) -> bool:
-    if path == "/":
+    if path == "/" or path == "/api/v1/health":
         return True
     for prefix in _EXCLUDED_PREFIXES:
         if path.startswith(prefix):
