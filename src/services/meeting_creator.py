@@ -22,6 +22,7 @@ from src.utils.db_handler import get_db_connection, release_db_connection, get_u
 from src.services.availability_engine import find_common_slots
 from src.services.email_queue import queue_email
 from src.services.notification import create_notification
+from src.services.whatsapp_queue import queue_whatsapp
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +196,7 @@ def _send_meeting_notifications(
         except Exception as e:
             print(f"[meeting_creator] Email queue failed for {email}: {e}")
 
+        user = None
         try:
             user = get_user_by_email(email)
             if user:
@@ -205,6 +207,13 @@ def _send_meeting_notifications(
                 )
         except Exception as e:
             print(f"[meeting_creator] In-app notification failed for {email}: {e}")
+
+        if user and user.get("phone_number"):
+            try:
+                queue_whatsapp(user["phone_number"], body,
+                               metadata={"channel": "meeting", "type": notification_type})
+            except Exception as e:
+                print(f"[meeting_creator] WhatsApp queue failed for {email}: {e}")
 
 
 def _schedule_reminders(

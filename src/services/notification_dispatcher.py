@@ -13,6 +13,7 @@ def send_meeting_notification(
     notification_type: str,
     meeting_details: dict,
     ics_attachment: str = None,
+    recipient_phone: str = None,
 ) -> dict:
     """
     Send an HTML email notification for a meeting event.
@@ -95,11 +96,30 @@ def send_meeting_notification(
             server.login(sender_email, sender_password)
             server.send_message(msg)
 
+        # Optional WhatsApp echo — fire-and-forget queue.
+        whatsapp_status = None
+        if recipient_phone:
+            try:
+                from src.services.whatsapp_queue import queue_whatsapp
+                wa_body = (
+                    f"{subject}\n\n"
+                    f"When: {meeting_details.get('start', '')}–{meeting_details.get('end', '')}\n"
+                    f"Where: {meeting_details.get('link') or meeting_details.get('location') or 'TBD'}\n"
+                    f"Organizer: {meeting_details.get('organizer', '')}"
+                )
+                queue_whatsapp(recipient_phone, wa_body,
+                               metadata={"channel": "meeting_notification",
+                                         "type": notification_type})
+                whatsapp_status = "queued"
+            except Exception as e:
+                whatsapp_status = f"failed: {e}"
+
         return {
             "success": True,
             "recipient": recipient_email,
             "notification_type": notification_type,
             "sent_at": datetime.utcnow().isoformat(),
+            "whatsapp": whatsapp_status,
         }
 
     except smtplib.SMTPAuthenticationError:
