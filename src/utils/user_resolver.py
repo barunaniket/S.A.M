@@ -58,12 +58,25 @@ def resolve_faculty_member(name_query: str, threshold: int = 75):
 
 def resolve_participants(names_list: list) -> list:
     """
-    Resolve a list of display names to faculty dicts.
+    Resolve a list of display names to faculty dicts. For each match we also
+    enrich with the matching `users` row (if any) so callers get phone_number
+    alongside email — required for WhatsApp fan-out.
+
     Names that don't match are silently skipped.
     """
+    from src.utils.db_handler import get_user_by_email
+
     resolved = []
     for name in names_list:
-        user = resolve_faculty_member(name)
-        if user:
-            resolved.append(user)
+        faculty = resolve_faculty_member(name)
+        if not faculty:
+            continue
+
+        enriched = dict(faculty)
+        email = faculty.get("email")
+        if email:
+            user_row = get_user_by_email(email)
+            if user_row and user_row.get("phone_number"):
+                enriched["phone_number"] = user_row["phone_number"]
+        resolved.append(enriched)
     return resolved
