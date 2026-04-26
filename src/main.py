@@ -24,6 +24,7 @@ from src.api.routes import (
     whatsapp,
     groups,
     health,
+    me,
 )
 
 # ---------------------------------------------------------------------------
@@ -66,6 +67,7 @@ app.include_router(uploads.router,            prefix="/api/v1", tags=["Uploads"]
 app.include_router(groups.router,             prefix="/api/v1", tags=["Groups"])
 app.include_router(whatsapp.router,                              tags=["WhatsApp Webhook"])  # mounted at /webhooks/whatsapp
 app.include_router(health.router,             prefix="/api/v1", tags=["Health"])
+app.include_router(me.router,                  prefix="/api/v1", tags=["Me"])
 
 # ---------------------------------------------------------------------------
 # Health check

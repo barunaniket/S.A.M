@@ -29,6 +29,11 @@ def _is_excluded(path: str) -> bool:
 
 
 async def verify_jwt_middleware(request: Request, call_next):
+    # CORS preflight carries no Authorization header — let it through so the
+    # CORSMiddleware downstream can answer it with the right headers.
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
     if _is_excluded(request.url.path):
         return await call_next(request)
 
