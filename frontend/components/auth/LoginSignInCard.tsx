@@ -1,65 +1,62 @@
 "use client";
 
-import {
-  ShieldCheck,
-  Settings,
-  Shield,
-  User,
-  UserCheck,
-} from "lucide-react";
+import { Lock, Shield, ShieldCheck, User, Users } from "lucide-react";
 import { ConnectGoogleButton } from "@/components/auth/ConnectGoogleButton";
 
 export function LoginSignInCard() {
   return (
-    <section className="flex w-full items-center justify-center bg-background p-6 lg:p-10">
-      <div className="w-full max-w-md">
+    <section className="flex w-full items-center justify-center">
+      <div className="w-full max-w-md rounded-2xl border border-border bg-card p-8 shadow-sm lg:p-10">
         <div className="text-center">
-          <div className="mx-auto grid size-11 place-items-center rounded-full bg-blue-100 text-blue-600">
-            <User className="size-5" />
+          <div className="mx-auto grid size-12 place-items-center rounded-full bg-muted text-foreground">
+            <User className="size-5" strokeWidth={2} />
           </div>
           <h2 className="mt-5 text-xl font-semibold tracking-tight text-foreground">
             Sign in as Teacher-in-Charge
           </h2>
-          <p className="mx-auto mt-2 max-w-xs text-sm text-muted-foreground">
+          <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">
             Connect your Google Calendar to automate scheduling, send invites,
             and avoid conflicts on your behalf.
           </p>
         </div>
 
-        <div className="mt-6">
+        <div className="mt-7">
           <ConnectGoogleButton
-            className="w-full bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-md hover:from-blue-600 hover:to-blue-700"
+            className="h-11 w-full rounded-md text-sm font-medium"
             label="Connect Google Calendar"
           />
         </div>
 
-        <div className="mt-8">
-          <p className="text-center text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-            Why we need this:
-          </p>
-          <ul className="mt-5 space-y-4">
-            <BenefitRow
-              icon={<UserCheck className="size-4" />}
-              lead="Only Teacher-in-Charge (SPOC) logs in."
-              detail="This ensures secure and controlled access."
-            />
-            <BenefitRow
-              icon={<Shield className="size-4" />}
-              lead="Your data is safe with us."
-              detail="We use industry-standard layers to protect your information."
-            />
-            <BenefitRow
-              icon={<Settings className="size-4" />}
-              lead="You're always in control."
-              detail="Disconnect anytime from Settings."
-            />
-          </ul>
+        <div className="mt-8 flex items-center gap-3">
+          <span className="h-px flex-1 bg-border" />
+          <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+            Why we need access
+          </span>
+          <span className="h-px flex-1 bg-border" />
         </div>
 
-        <p className="mt-10 flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
-          <ShieldCheck className="size-3.5 text-emerald-600" />
-          Trusted by Faculty. Built for efficiency.
-        </p>
+        <ul className="mt-6 space-y-4">
+          <BenefitRow
+            icon={<Users className="size-4" strokeWidth={2} />}
+            lead="Only Teacher-in-Charge (SPOC) logs in."
+            detail="This ensures secure and controlled access."
+          />
+          <BenefitRow
+            icon={<Shield className="size-4" strokeWidth={2} />}
+            lead="Your data is safe with us."
+            detail="We use encrypted tokens to protect your information."
+          />
+          <BenefitRow
+            icon={<Lock className="size-4" strokeWidth={2} />}
+            lead="You're always in control."
+            detail="Disconnect anytime from Settings."
+          />
+        </ul>
+
+        <div className="mt-8 flex items-center justify-center gap-2 border-t border-border pt-5 text-xs text-muted-foreground">
+          <ShieldCheck className="size-3.5" />
+          Trusted by faculty. Built for efficiency.
+        </div>
       </div>
     </section>
   );
@@ -76,12 +73,12 @@ function BenefitRow({
 }) {
   return (
     <li className="flex items-start gap-3">
-      <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-full bg-blue-100 text-blue-600">
+      <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-md bg-muted text-foreground">
         {icon}
       </span>
       <div className="leading-snug">
-        <p className="text-sm font-semibold text-foreground">{lead}</p>
-        <p className="mt-0.5 text-xs text-muted-foreground">{detail}</p>
+        <p className="text-[13px] font-semibold text-foreground">{lead}</p>
+        <p className="mt-1 text-[12px] text-muted-foreground">{detail}</p>
       </div>
     </li>
   );

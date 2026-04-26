@@ -15,10 +15,21 @@ export default function LoginPage() {
   }, [ready, isAuthed, router]);
 
   return (
-    <main className="min-h-screen bg-slate-100 p-4 lg:p-8">
-      <div className="mx-auto grid h-full min-h-[calc(100vh-4rem)] w-full max-w-7xl overflow-hidden rounded-3xl bg-card shadow-xl ring-1 ring-border lg:grid-cols-[1.4fr_1fr]">
-        <LoginHero />
-        <LoginSignInCard />
+    <main className="relative min-h-screen overflow-hidden bg-muted/40">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -left-40 top-[-20%] h-[40rem] w-[40rem] rounded-full bg-blue-500/[0.08] blur-3xl"
+      />
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -right-40 bottom-[-30%] h-[40rem] w-[40rem] rounded-full bg-primary/[0.06] blur-3xl"
+      />
+
+      <div className="relative mx-auto flex min-h-screen w-full max-w-7xl items-center px-6 py-12 lg:px-12">
+        <div className="grid w-full gap-12 lg:grid-cols-[1.15fr_1fr] lg:gap-20">
+          <LoginHero />
+          <LoginSignInCard />
+        </div>
       </div>
     </main>
   );

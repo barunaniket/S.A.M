@@ -1,48 +1,39 @@
 "use client";
 
 import {
-  Bell,
   CalendarClock,
   CheckCircle2,
   Lock,
-  ShieldAlert,
+  Shield,
   Sparkles,
+  Users,
 } from "lucide-react";
 
 export function LoginHero() {
   return (
-    <aside className="relative hidden flex-col justify-between overflow-hidden bg-blue-50/60 p-10 lg:flex xl:p-12">
-      <div
-        aria-hidden
-        className="pointer-events-none absolute -left-24 -top-24 size-[28rem] rounded-full bg-blue-200/50 blur-3xl"
-      />
-      <div
-        aria-hidden
-        className="pointer-events-none absolute -bottom-32 -right-24 size-[32rem] rounded-full bg-indigo-200/40 blur-3xl"
-      />
-
-      <header className="relative flex items-center gap-2.5">
-        <div className="grid size-9 place-items-center rounded-xl bg-blue-600 text-sm font-bold text-white shadow-sm">
+    <aside className="flex flex-col justify-between gap-12">
+      <header className="flex items-center gap-2.5">
+        <div className="grid size-9 place-items-center rounded-md bg-primary font-bold text-primary-foreground">
           S
         </div>
         <div className="leading-tight">
           <p className="text-sm font-semibold tracking-tight text-foreground">
             S.A.M
           </p>
-          <p className="text-[10px] text-muted-foreground">
+          <p className="text-[11px] text-muted-foreground">
             Smart Administrative Messenger
           </p>
         </div>
       </header>
 
-      <div className="relative flex flex-1 flex-col justify-center gap-10 py-8">
+      <div className="space-y-10">
         <div>
-          <h1 className="text-6xl font-bold leading-[1.02] tracking-tight text-foreground">
+          <h1 className="text-5xl font-semibold leading-[1.05] tracking-tight text-foreground xl:text-[3.5rem]">
             Simplify Faculty
             <br />
             Scheduling
           </h1>
-          <p className="mt-5 max-w-md text-base text-muted-foreground">
+          <p className="mt-4 max-w-md text-[15px] leading-relaxed text-muted-foreground">
             Automate meetings, avoid conflicts, and manage schedules
             effortlessly.
           </p>
@@ -50,32 +41,34 @@ export function LoginHero() {
 
         <HeroIllustration />
 
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <FeatureCard
-            icon={<CalendarClock className="size-4 text-blue-600" />}
+            icon={<CalendarClock className="size-4" />}
             title="Smart Scheduling"
-            subtitle="Find the best slot in seconds."
+            subtitle="Find the best time for meetings automatically."
           />
           <FeatureCard
-            icon={<ShieldAlert className="size-4 text-amber-600" />}
+            icon={<Shield className="size-4" />}
             title="Conflict Detection"
-            subtitle="Catch overlaps automatically."
+            subtitle="Catch overlaps before they happen."
           />
           <FeatureCard
-            icon={<Bell className="size-4 text-indigo-600" />}
+            icon={<Users className="size-4" />}
             title="Centralized Updates"
-            subtitle="One source of truth for all."
+            subtitle="Send invites and updates from one place."
           />
         </div>
       </div>
 
-      <p className="relative flex items-center gap-2 text-xs text-muted-foreground">
-        <Lock className="size-3.5 shrink-0" />
-        <span>
-          Built with security &amp; privacy in mind. We only access your
-          calendar to create and manage events on your behalf.
+      <div className="flex items-start gap-3 rounded-lg border border-border bg-card/70 px-4 py-3 backdrop-blur">
+        <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">
+          <Lock className="size-3.5" />
         </span>
-      </p>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          Built with security &amp; privacy in mind. We only access your calendar
+          to create and manage events on your behalf.
+        </p>
+      </div>
     </aside>
   );
 }
@@ -90,14 +83,16 @@ function FeatureCard({
   subtitle: string;
 }) {
   return (
-    <div className="rounded-xl border border-border bg-white/80 p-3 shadow-sm backdrop-blur-sm">
-      <div className="flex items-center gap-2">
-        <span className="grid size-7 place-items-center rounded-lg bg-blue-50">
+    <div className="rounded-lg border border-border bg-card p-4 transition-colors hover:border-foreground/15">
+      <div className="flex items-center gap-2.5">
+        <span className="grid size-7 place-items-center rounded-md bg-muted text-foreground">
           {icon}
         </span>
-        <p className="text-[12px] font-semibold text-foreground">{title}</p>
+        <p className="text-[13px] font-semibold tracking-tight text-foreground">
+          {title}
+        </p>
       </div>
-      <p className="mt-1.5 text-[10px] leading-snug text-muted-foreground">
+      <p className="mt-2 text-[12px] leading-snug text-muted-foreground">
         {subtitle}
       </p>
     </div>
@@ -106,68 +101,103 @@ function FeatureCard({
 
 function HeroIllustration() {
   return (
-    <div className="relative mx-auto h-56 w-full max-w-md">
+    <div className="relative mx-auto h-64 w-full max-w-lg">
       <div
         aria-hidden
-        className="absolute left-1/2 top-1/2 size-56 -translate-x-1/2 -translate-y-1/2 rounded-full bg-blue-200/40 blur-2xl"
+        className="absolute inset-x-10 inset-y-6 rounded-3xl bg-blue-500/[0.06] blur-2xl"
       />
 
-      <div className="absolute left-2 top-2 w-56 rounded-2xl border border-border bg-card p-4 shadow-lg">
-        <div className="flex items-center gap-2 rounded-full bg-blue-50 px-2.5 py-1 w-fit">
-          <Sparkles className="size-3 text-blue-600" />
-          <span className="text-[10px] font-semibold text-blue-700">
-            AI Assistant
-          </span>
-        </div>
-        <p className="mt-3 text-[10px] text-muted-foreground">
-          Finding the best slot…
-        </p>
-        <div className="mt-3 space-y-2">
-          <div className="rounded-lg bg-blue-50 p-2">
-            <div className="h-1.5 w-3/4 rounded-full bg-blue-200" />
-            <div className="mt-1.5 h-1.5 w-1/2 rounded-full bg-blue-200/60" />
+      {/* Calendar window mockup */}
+      <div className="absolute left-8 top-2 flex w-[78%] overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+        {/* Window chrome */}
+        <div className="flex w-9 flex-col items-center gap-3 border-r border-border bg-muted/60 py-3">
+          <div className="flex flex-col gap-1">
+            <span className="size-1.5 rounded-full bg-foreground/20" />
+            <span className="size-1.5 rounded-full bg-foreground/20" />
+            <span className="size-1.5 rounded-full bg-foreground/20" />
           </div>
-          <div className="rounded-lg bg-amber-50 p-2">
-            <div className="h-1.5 w-2/3 rounded-full bg-amber-200" />
-            <div className="mt-1.5 h-1.5 w-2/5 rounded-full bg-amber-200/60" />
+          <CalendarClock className="size-3.5 text-muted-foreground" />
+          <Users className="size-3.5 text-muted-foreground" />
+          <Sparkles className="size-3.5 text-muted-foreground" />
+        </div>
+
+        {/* Calendar body */}
+        <div className="relative flex-1 p-3">
+          <div className="mb-2 flex items-center justify-between">
+            <div className="h-2 w-16 rounded-full bg-muted" />
+            <div className="flex gap-1">
+              <span className="size-1.5 rounded-full bg-muted" />
+              <span className="size-1.5 rounded-full bg-muted" />
+            </div>
+          </div>
+          <div className="grid grid-cols-4 gap-1">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="h-3 rounded-sm bg-muted/70" />
+            ))}
+          </div>
+          <div className="relative mt-1.5 grid grid-cols-4 gap-1">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="h-24 rounded-sm bg-muted/40" />
+            ))}
+
+            {/* Event chips */}
+            <div className="absolute left-1 top-1 w-[44%] rounded-md border border-blue-500/20 bg-blue-50 px-2 py-1.5">
+              <p className="text-[8px] font-semibold leading-tight text-blue-900">
+                Department
+                <br />
+                Meeting
+              </p>
+              <p className="mt-0.5 text-[7px] text-blue-700/70">10:00 AM</p>
+            </div>
+            <div className="absolute left-[46%] top-6 w-[36%] rounded-md border border-violet-500/20 bg-violet-50 px-2 py-1.5">
+              <p className="text-[8px] font-semibold leading-tight text-violet-900">
+                Class Review
+              </p>
+              <p className="mt-0.5 text-[7px] text-violet-700/70">11:30 AM</p>
+            </div>
+            <div className="absolute left-[26%] bottom-1 w-[42%] rounded-md border border-amber-500/20 bg-amber-50 px-2 py-1.5">
+              <p className="text-[8px] font-semibold leading-tight text-amber-900">
+                Curriculum
+                <br />
+                Discussion
+              </p>
+              <p className="mt-0.5 text-[7px] text-amber-700/70">2:00 PM</p>
+            </div>
           </div>
         </div>
       </div>
 
-      <FloatingChip
-        className="right-2 top-4"
-        icon={<CalendarClock className="size-3 text-blue-600" />}
-        title="Smart Scheduling"
-      />
-      <FloatingChip
-        className="bottom-12 right-0"
-        icon={<ShieldAlert className="size-3 text-rose-600" />}
-        title="No Conflicts"
-      />
-      <FloatingChip
-        className="bottom-2 right-10"
-        icon={<CheckCircle2 className="size-3 text-emerald-600" />}
-        title="Confirmed"
-      />
-    </div>
-  );
-}
+      {/* AI Assistant card */}
+      <div className="absolute -left-2 bottom-2 w-44 rounded-lg border border-border bg-card p-3 shadow-sm">
+        <div className="flex items-center gap-1.5">
+          <Sparkles className="size-3 text-foreground" />
+          <span className="text-[11px] font-semibold tracking-tight text-foreground">
+            AI Assistant
+          </span>
+        </div>
+        <p className="mt-1.5 text-[10px] leading-snug text-muted-foreground">
+          Finding the best time for everyone…
+        </p>
+        <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-muted">
+          <div className="h-full w-2/3 rounded-full bg-foreground/80" />
+        </div>
+      </div>
 
-function FloatingChip({
-  className,
-  icon,
-  title,
-}: {
-  className?: string;
-  icon: React.ReactNode;
-  title: string;
-}) {
-  return (
-    <div
-      className={`absolute flex items-center gap-1.5 rounded-lg border border-border bg-card px-2 py-1.5 text-[10px] font-semibold text-foreground shadow-md ${className ?? ""}`}
-    >
-      {icon}
-      {title}
+      {/* No conflicts pill */}
+      <div className="absolute right-2 top-8 flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1.5 shadow-sm">
+        <CheckCircle2 className="size-3.5 text-emerald-600" />
+        <span className="text-[10px] font-semibold tracking-tight text-foreground">
+          No Conflicts
+        </span>
+      </div>
+
+      {/* Confirmed pill */}
+      <div className="absolute bottom-6 right-4 flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1.5 shadow-sm">
+        <Shield className="size-3.5 text-foreground" />
+        <span className="text-[10px] font-semibold tracking-tight text-foreground">
+          Confirmed
+        </span>
+      </div>
     </div>
   );
 }
