@@ -1,7 +1,7 @@
 import random
 import string
 from datetime import datetime, timedelta
-from utils.db_handler import get_db
+from src.utils.db_handler import get_db
 
 
 ORG_COUNT = 5

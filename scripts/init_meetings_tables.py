@@ -1,6 +1,6 @@
 import psycopg2
 from psycopg2 import OperationalError, DatabaseError
-from utils.config_loader import Config
+from src.utils.config_loader import Config
 
 
 class DatabaseInitializationError(Exception):
@@ -57,12 +57,15 @@ def create_tables(cursor):
                 org_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
                 email VARCHAR(150) UNIQUE NOT NULL,
                 full_name VARCHAR(100) NOT NULL,
-                role VARCHAR(20) CHECK (role IN ('ADMIN', 'FACULTY', 'STUDENT')) NOT NULL,
+                picture_url TEXT,
+                role VARCHAR(20) CHECK (role IN ('ADMIN', 'FACULTY', 'STUDENT')) NOT NULL DEFAULT 'FACULTY',
                 phone_number VARCHAR(20),
                 department VARCHAR(100),
-                google_refresh_token TEXT,
+                access_token TEXT,
+                encrypted_refresh_token TEXT,
                 is_onboarded BOOLEAN DEFAULT FALSE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             CREATE UNIQUE INDEX idx_users_phone ON users(phone_number) WHERE phone_number IS NOT NULL;
         """)
@@ -254,6 +257,22 @@ def create_tables(cursor):
             ON audit_logs
             USING (org_id = current_setting('app.org_id')::int)
             WITH CHECK (org_id = current_setting('app.org_id')::int);
+        """)
+
+        # ============================
+        # SEED: default organisation (id = 1)
+        # The Google OAuth flow in src/api/routes/auth.py hardcodes org_id=1
+        # for new SPOC sign-ups, so this row must exist before the first login.
+        # ============================
+        cursor.execute("""
+            INSERT INTO organizations (id, name, invite_code, domain_whitelist)
+            VALUES (1, 'Default Organisation', 'DEFAULT-ORG', NULL)
+            ON CONFLICT (id) DO NOTHING;
+
+            -- Keep the SERIAL counter ahead of the seeded row so future
+            -- INSERTs with auto-id don't collide.
+            SELECT setval(pg_get_serial_sequence('organizations', 'id'),
+                          GREATEST((SELECT MAX(id) FROM organizations), 1));
         """)
 
     except DatabaseError as err:
