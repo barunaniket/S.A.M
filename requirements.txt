@@ -29,3 +29,7 @@ pandas
 openpyxl
 pypdf
 python-docx
+pytesseract
+Pillow
+faster-whisper
+ffmpeg-python

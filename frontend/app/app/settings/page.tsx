@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { LogOut, RefreshCw } from "lucide-react";
+import { useEffect, useState } from "react";
+import { LogOut, RefreshCw, Save } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -9,15 +9,23 @@ import { Separator } from "@/components/ui/separator";
 import { ConnectGoogleButton } from "@/components/auth/ConnectGoogleButton";
 import { useAuth } from "@/hooks/useAuth";
 import { useGoogleStatus } from "@/hooks/useGoogleStatus";
+import { apiFetch } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const tabs = [
   { id: "account", label: "Account" },
+  { id: "briefing", label: "Daily briefing" },
   { id: "google", label: "Google Calendar" },
   { id: "about", label: "About" },
 ] as const;
 
 type TabId = (typeof tabs)[number]["id"];
+
+type Prefs = {
+  briefing_time: string;
+  timezone: string;
+  briefing_enabled: boolean;
+};
 
 export default function SettingsPage() {
   const [tab, setTab] = useState<TabId>("account");
@@ -70,6 +78,8 @@ export default function SettingsPage() {
               </CardContent>
             </Card>
           )}
+
+          {tab === "briefing" && <BriefingPanel />}
 
           {tab === "google" && (
             <Card>
@@ -138,6 +148,103 @@ export default function SettingsPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+function BriefingPanel() {
+  const [prefs, setPrefs] = useState<Prefs | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    apiFetch<{ preferences: Prefs }>("/api/v1/me/preferences")
+      .then((d) => setPrefs(d.preferences))
+      .catch((e: Error) => setError(e.message));
+  }, []);
+
+  const save = async () => {
+    if (!prefs) return;
+    setBusy(true);
+    setError(null);
+    setSaved(false);
+    try {
+      await apiFetch("/api/v1/me/preferences", {
+        method: "PUT",
+        body: JSON.stringify(prefs),
+      });
+      setSaved(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!prefs) {
+    return (
+      <Card>
+        <CardContent className="p-6 text-sm text-muted-foreground">
+          {error ?? "Loading…"}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Daily briefing</CardTitle>
+        <CardDescription>
+          S.A.M. sends you a morning summary on WhatsApp — today&apos;s
+          classes, meetings, tasks due, and any academic events.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        <label className="flex items-center gap-3 text-sm">
+          <input
+            type="checkbox"
+            checked={prefs.briefing_enabled}
+            onChange={(e) =>
+              setPrefs({ ...prefs, briefing_enabled: e.target.checked })
+            }
+          />
+          Send me a daily briefing
+        </label>
+
+        <div className="grid grid-cols-[140px_1fr] items-center gap-3 text-sm">
+          <span className="text-muted-foreground">Briefing time</span>
+          <input
+            type="time"
+            value={prefs.briefing_time}
+            onChange={(e) =>
+              setPrefs({ ...prefs, briefing_time: e.target.value })
+            }
+            className="w-32 rounded border bg-background px-2 py-1"
+          />
+        </div>
+        <div className="grid grid-cols-[140px_1fr] items-center gap-3 text-sm">
+          <span className="text-muted-foreground">Timezone</span>
+          <input
+            value={prefs.timezone}
+            onChange={(e) => setPrefs({ ...prefs, timezone: e.target.value })}
+            placeholder="Asia/Kolkata"
+            className="w-60 rounded border bg-background px-2 py-1"
+          />
+        </div>
+
+        {error && (
+          <p className="text-sm text-destructive">{error}</p>
+        )}
+        {saved && (
+          <p className="text-sm text-emerald-600">Saved.</p>
+        )}
+
+        <Button onClick={save} disabled={busy} className="gap-2">
+          <Save className="size-4" /> {busy ? "Saving…" : "Save"}
+        </Button>
+      </CardContent>
+    </Card>
   );
 }
 

@@ -54,11 +54,17 @@ def persist_pending_upload(
     user_id: int,
     file_path: str,
     parsed: dict,
+    parse_kind: str | None = None,
 ) -> int:
     """
     Insert a row into pending_uploads and return its id.
     Exposed at module level so the WhatsApp orchestrator can reuse it.
+
+    `parse_kind` overrides the auto-detected file format (e.g. pass
+    "timetable" or "tasks" for stateful flows so downstream code can branch
+    on the user's intent rather than the raw media type).
     """
+    kind_value = parse_kind or parsed.get("kind") or "unknown"
     with get_db(org_id) as cur:
         cur.execute(
             """
@@ -67,7 +73,7 @@ def persist_pending_upload(
             VALUES (%s, %s, %s, %s, %s)
             RETURNING id;
             """,
-            (org_id, user_id, file_path, parsed.get("kind", "unknown"),
+            (org_id, user_id, file_path, kind_value,
              json.dumps(parsed, default=str)),
         )
         return cur.fetchone()["id"]

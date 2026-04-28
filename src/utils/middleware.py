@@ -58,6 +58,7 @@ async def verify_jwt_middleware(request: Request, call_next):
         request.state.user_id = user_id
         request.state.org_id = org_id
         request.state.email = payload.get("email")  # optional, set if present in JWT
+        request.state.role = payload.get("role")    # optional; consumed by require_roles()
 
     except jwt.ExpiredSignatureError:
         return JSONResponse(

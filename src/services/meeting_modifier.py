@@ -10,6 +10,7 @@ Features added:
 """
 
 from datetime import datetime, timedelta
+from typing import Optional
 
 from googleapiclient.errors import HttpError
 
@@ -150,6 +151,7 @@ def reschedule_meeting(
     new_start_datetime: str,
     new_end_datetime: str,
     scheduler_email: str,
+    org_id: Optional[int] = None,
 ) -> dict:
     """
     Reschedule an existing Google Calendar event to a new time slot.
@@ -164,6 +166,15 @@ def reschedule_meeting(
 
         if not new_start or not new_end:
             return {"success": False, "error": "Invalid datetime format provided"}
+
+        # Academic-calendar guard.
+        if org_id:
+            from src.services.academic_calendar import block_message, is_blocked
+            blocker = is_blocked(org_id, new_start)
+            if blocker:
+                return {"success": False, "error": "academic_event_block",
+                        "message": block_message(blocker),
+                        "blocked_by": blocker}
 
         service = get_calendar_service(user_email=scheduler_email)
 

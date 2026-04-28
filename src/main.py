@@ -25,6 +25,12 @@ from src.api.routes import (
     groups,
     health,
     me,
+    timetable as timetable_routes,
+    academic_calendar as academic_routes,
+    tasks as tasks_routes,
+    bookings as bookings_routes,
+    admin_users as admin_users_routes,
+    preferences as preferences_routes,
 )
 
 # ---------------------------------------------------------------------------
@@ -68,6 +74,12 @@ app.include_router(groups.router,             prefix="/api/v1", tags=["Groups"])
 app.include_router(whatsapp.router,                              tags=["WhatsApp Webhook"])  # mounted at /webhooks/whatsapp
 app.include_router(health.router,             prefix="/api/v1", tags=["Health"])
 app.include_router(me.router,                  prefix="/api/v1", tags=["Me"])
+app.include_router(timetable_routes.router,    prefix="/api/v1", tags=["Timetable"])
+app.include_router(academic_routes.router,     prefix="/api/v1", tags=["Academic Calendar"])
+app.include_router(tasks_routes.router,        prefix="/api/v1", tags=["Tasks"])
+app.include_router(bookings_routes.router,     prefix="/api/v1", tags=["Bookings"])
+app.include_router(admin_users_routes.router,  prefix="/api/v1", tags=["Admin Users"])
+app.include_router(preferences_routes.router,  prefix="/api/v1", tags=["Preferences"])
 
 # ---------------------------------------------------------------------------
 # Health check

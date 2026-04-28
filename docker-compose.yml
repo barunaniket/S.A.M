@@ -52,6 +52,20 @@ services:
       - backend
       - redis
 
+  # 5. The Celery Beat scheduler — fires periodic tasks (daily briefings,
+  # task reminder ticks). Must run as a separate container, otherwise
+  # schedules duplicate when the worker scales horizontally.
+  beat:
+    build: .
+    command: celery -A src.worker.celery_app beat --loglevel=info
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      - worker
+      - redis
+
   # NOTE: The Next.js frontend runs on the host (not in Docker).
   # Next's file watcher and .next cache are unreliable on this project's
   # bind-mounted NTFS path. See README §6.4 for the host-side dev command.

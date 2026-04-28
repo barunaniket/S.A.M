@@ -14,6 +14,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         libpq-dev \
         curl \
+        # Tesseract for image OCR (M1: timetable photos, task sheets)
+        tesseract-ocr \
+        # ffmpeg for audio decoding before faster-whisper transcription
+        ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./

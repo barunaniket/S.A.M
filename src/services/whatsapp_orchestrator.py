@@ -33,6 +33,7 @@ from src.services.file_ingestor import (
 )
 from src.services.intent_router import route_intent
 from src.services.llm_processor import LLMProcessor
+from src.services.memory_store import append_log as memory_append_log
 from src.services.whatsapp_audit import log_inbound
 from src.services.whatsapp_queue import queue_whatsapp
 from src.services.whatsapp_service import download_media, send_buttons
@@ -42,19 +43,40 @@ from src.utils.db_handler import get_db_connection, release_db_connection
 
 # Button IDs used in interactive replies. The LLM never sees these — they're
 # routed straight to the action layer.
-BTN_CONFIRM_UPLOAD = "sam_confirm_upload"
-BTN_DISCARD_UPLOAD = "sam_discard_upload"
+BTN_CONFIRM_UPLOAD    = "sam_confirm_upload"
+BTN_DISCARD_UPLOAD    = "sam_discard_upload"
+BTN_CONFIRM_TIMETABLE = "sam_confirm_timetable"
+BTN_DISCARD_TIMETABLE = "sam_discard_timetable"
+BTN_CONFIRM_TASKS     = "sam_confirm_tasks"
+BTN_DISCARD_TASKS     = "sam_discard_tasks"
 
 logger = logging.getLogger(__name__)
 
 
 _MIME_EXT = {
+    # Documents
     "application/pdf": ".pdf",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
     "application/vnd.ms-excel": ".xls",
     "text/plain": ".txt",
     "text/markdown": ".md",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    # Images (Tesseract OCR)
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    # Audio (faster-whisper). WhatsApp voice notes arrive as audio/ogg
+    # (Opus). audio/mp4 covers iOS .m4a recordings.
+    "audio/ogg": ".ogg",
+    "audio/oga": ".oga",
+    "audio/mpeg": ".mp3",
+    "audio/mp4": ".m4a",
+    "audio/x-m4a": ".m4a",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/aac": ".aac",
+    "audio/amr": ".amr",
 }
 
 
@@ -106,6 +128,9 @@ def _reply(phone: str, body: str, role: str = "assistant",
         meta["user_id"] = user_id
     queue_whatsapp(phone, body, metadata=meta)
     append_history(phone, role, body)
+    # Persistent log alongside the Redis hot cache.
+    memory_append_log(user_id, role, body, org_id=org_id, phone=phone,
+                      channel="whatsapp", metadata={"source": "orchestrator"})
 
 
 def _send_confirm_buttons(phone: str, user: Dict[str, Any], summary: str,
@@ -186,8 +211,9 @@ def _handle_document(user: Dict[str, Any], phone: str, msg: Dict[str, Any]) -> N
     if ext not in SUPPORTED_EXTS:
         _reply(
             phone,
-            "Sorry — I can only handle Excel (.xlsx/.xls), PDF, text (.txt/.md), "
-            "or Word (.docx) files for now. Audio/video isn't supported yet.",
+            "Sorry — I couldn't recognise that attachment. I can read Excel, PDF, "
+            "Word, plain text, photos (JPG/PNG/WEBP), and voice notes "
+            "(OGG/MP3/M4A/WAV).",
         )
         return
 
@@ -209,6 +235,19 @@ def _handle_document(user: Dict[str, Any], phone: str, msg: Dict[str, Any]) -> N
         _reply(phone, f"I couldn't parse the file: {e}")
         return
 
+    # Branch: the user asked to onboard their timetable, so anything they
+    # send next is the timetable itself (image/audio/text).
+    session = get_session(phone) or {}
+    if session.get("state") == "AWAITING_TIMETABLE":
+        _handle_timetable_upload(user, phone, parsed, saved)
+        return
+
+    # Branch: bulk task-assignment flow. Any media uploaded after the admin
+    # said "assign tasks" gets routed to the task extractor.
+    if session.get("state") == "AWAITING_TASKS":
+        _handle_tasks_upload(user, phone, parsed, saved)
+        return
+
     attendees = extract_attendees(parsed)
     meeting   = extract_meeting_metadata(parsed)
     summary   = summarize(parsed, attendees)
@@ -224,7 +263,6 @@ def _handle_document(user: Dict[str, Any], phone: str, msg: Dict[str, Any]) -> N
         parsed={**parsed, "attendees": attendees, "meeting": meeting},
     )
 
-    session = get_session(phone) or {}
     session.update({
         "user_id":            user["id"],
         "org_id":             user["org_id"],
@@ -239,6 +277,276 @@ def _handle_document(user: Dict[str, Any], phone: str, msg: Dict[str, Any]) -> N
         phone, user, f"Got it. {summary}",
         meeting_found=bool(meeting and meeting.get("found")),
     )
+
+
+# ---------------------------------------------------------------------------
+# Timetable onboarding (M2)
+# ---------------------------------------------------------------------------
+
+def _handle_timetable_upload(user: Dict[str, Any], phone: str,
+                             parsed: Dict[str, Any], saved_path: Any) -> None:
+    """
+    Faculty sent a timetable (image OCR / voice transcript / text) and we're
+    in AWAITING_TIMETABLE state. Run timetable_extractor on the parsed text,
+    persist as a pending_upload, and echo the grid back with confirm/discard.
+    """
+    from src.services.timetable_extractor import (
+        extract_timetable,
+        summarize_timetable,
+    )
+
+    text = parsed.get("text") or ""
+    if not text.strip():
+        _reply(phone,
+               "I couldn't read any text from that. Please try a clearer photo "
+               "or send the timetable as text.",
+               org_id=user.get("org_id"), user_id=user.get("id"))
+        return
+
+    extraction = extract_timetable(text)
+    entries = extraction.get("entries", [])
+
+    if not entries:
+        _reply(phone,
+               "I couldn't pick out any classes from that. Could you re-send "
+               "with clearer day/time labels, or type the timetable out?",
+               org_id=user.get("org_id"), user_id=user.get("id"))
+        return
+
+    # Persist as a pending_upload with parse_kind='timetable' so the UI can
+    # render it for editing too (web review path).
+    upload_id = persist_pending_upload(
+        org_id=user["org_id"],
+        user_id=user["id"],
+        file_path=str(saved_path),
+        parsed={**parsed, "timetable": entries,
+                "needs_review": extraction.get("needs_review", False)},
+        parse_kind="timetable",
+    )
+
+    session = get_session(phone) or {}
+    session.update({
+        "user_id":              user["id"],
+        "org_id":               user["org_id"],
+        "state":                "AWAITING_TIMETABLE_CONFIRM",
+        "pending_upload_id":    upload_id,
+        "pending_timetable":    entries,
+    })
+    set_session(phone, session)
+
+    note = ""
+    if extraction.get("needs_review"):
+        note = ("\n\n_(Some cells looked ambiguous — please double-check "
+                "before confirming.)_")
+
+    body = (f"Here's the timetable I extracted:\n\n"
+            f"{summarize_timetable(entries)}{note}\n\n"
+            "Tap *Save* to store it, or *Discard* and re-send.")
+
+    try:
+        result = send_buttons(
+            to_phone=phone,
+            body=body,
+            buttons=[
+                {"id": "sam_confirm_timetable", "title": "Save"},
+                {"id": "sam_discard_timetable", "title": "Discard"},
+            ],
+            footer="S.A.M. timetable",
+        )
+        if not result.get("success"):
+            raise RuntimeError(result.get("error"))
+        append_history(phone, "assistant", body, extra={"interactive": True})
+    except Exception:
+        _reply(phone, body, org_id=user.get("org_id"), user_id=user.get("id"))
+
+
+# ---------------------------------------------------------------------------
+# Bulk task assignment (M4)
+# ---------------------------------------------------------------------------
+
+def _handle_tasks_upload(user: Dict[str, Any], phone: str,
+                         parsed: Dict[str, Any], saved_path: Any) -> None:
+    """
+    Admin sent a file/photo/audio after declaring "I want to assign tasks".
+    Run task_extractor and echo the parsed list back with confirm/discard.
+    """
+    from src.services.task_extractor import extract_tasks, summarize_tasks
+
+    text = parsed.get("text") or ""
+    if not text.strip():
+        _reply(phone,
+               "I couldn't read any text from that. Send a clearer photo, a "
+               "voice note, or paste the assignments as text.",
+               org_id=user.get("org_id"), user_id=user.get("id"))
+        return
+
+    extraction = extract_tasks(text)
+    tasks = extraction.get("tasks", [])
+    if not tasks:
+        _reply(phone,
+               "I couldn't pick out any task assignments from that. Try "
+               "phrases like 'Prof Sharma will do X by Friday'.",
+               org_id=user.get("org_id"), user_id=user.get("id"))
+        return
+
+    upload_id = persist_pending_upload(
+        org_id=user["org_id"],
+        user_id=user["id"],
+        file_path=str(saved_path),
+        parsed={**parsed, "tasks": tasks},
+        parse_kind="tasks",
+    )
+
+    session = get_session(phone) or {}
+    session.update({
+        "user_id":           user["id"],
+        "org_id":            user["org_id"],
+        "state":             "AWAITING_TASKS_CONFIRM",
+        "pending_upload_id": upload_id,
+        "pending_tasks":     tasks,
+    })
+    set_session(phone, session)
+
+    note = ""
+    if extraction.get("needs_review"):
+        note = "\n\n_(Some entries looked ambiguous — review carefully.)_"
+
+    body = (f"Here are the tasks I extracted ({len(tasks)} total):\n\n"
+            f"{summarize_tasks(tasks)}{note}\n\n"
+            "Tap *Send out* to assign + schedule reminders, or *Discard*.")
+
+    # Long lists go via web link in the third button.
+    review_button = None
+    if len(tasks) > 6:
+        review_button = {
+            "id": f"sam_review_tasks_{upload_id}",
+            "title": "Review",
+        }
+
+    buttons = [
+        {"id": BTN_CONFIRM_TASKS, "title": "Send out"},
+        {"id": BTN_DISCARD_TASKS, "title": "Discard"},
+    ]
+    if review_button:
+        buttons.append(review_button)
+
+    try:
+        result = send_buttons(
+            to_phone=phone,
+            body=body,
+            buttons=buttons,
+            footer="S.A.M. tasks",
+        )
+        if not result.get("success"):
+            raise RuntimeError(result.get("error"))
+        append_history(phone, "assistant", body, extra={"interactive": True})
+    except Exception:
+        # Fallback to plain text if WhatsApp interactive fails.
+        _reply(phone, body + "\n\nReply *send* to send or *discard*.",
+               org_id=user.get("org_id"), user_id=user.get("id"))
+
+
+def _send_pending_tasks(user: Dict[str, Any], phone: str,
+                        session: Dict[str, Any]) -> Dict[str, Any]:
+    """Persist + dispatch the tasks currently in session."""
+    from src.services.task_service import create_tasks_bulk, format_task_message
+    from src.utils.db_handler import get_user_by_email
+
+    tasks = session.get("pending_tasks") or []
+    if not tasks:
+        return {"success": False, "message": "No tasks to send."}
+
+    created = create_tasks_bulk(
+        org_id=user["org_id"], assigned_by=user["id"],
+        tasks=tasks,
+        source_upload_id=session.get("pending_upload_id"),
+        schedule_reminders=True,
+    )
+
+    # Mark pending_upload executed.
+    upload_id = session.get("pending_upload_id")
+    if upload_id:
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("SET LOCAL app.org_id = %s;", (str(user["org_id"]),))
+            cur.execute(
+                "UPDATE pending_uploads SET status='EXECUTED' WHERE id = %s;",
+                (upload_id,),
+            )
+            conn.commit()
+            cur.close()
+        finally:
+            release_db_connection(conn)
+
+    # Send each assignee a personalised kickoff DM (best-effort).
+    sent = unmatched = 0
+    for c in created:
+        body = format_task_message(c, kind="assigned")
+        target_phone = None
+        if c.get("assignee_id") and c.get("assignee_email"):
+            try:
+                u = get_user_by_email(c["assignee_email"])
+                if u:
+                    target_phone = u.get("phone_number")
+            except Exception:
+                pass
+        if target_phone:
+            try:
+                queue_whatsapp(target_phone, body, metadata={
+                    "channel": "task_assignment",
+                    "task_id": c["id"],
+                    "org_id":  user["org_id"],
+                    "user_id": c.get("assignee_id"),
+                })
+                sent += 1
+            except Exception:
+                logger.exception("Failed to queue task DM for %s", target_phone)
+        else:
+            unmatched += 1
+
+    msg_parts = [f"Sent out {len(created)} task(s)."]
+    if sent:
+        msg_parts.append(f"Notified {sent} on WhatsApp.")
+    if unmatched:
+        msg_parts.append(f"{unmatched} couldn't be reached on WhatsApp "
+                         "(missing phone or unmatched name).")
+    return {"success": True, "message": " ".join(msg_parts)}
+
+
+def _save_pending_timetable(user: Dict[str, Any], phone: str,
+                            session: Dict[str, Any]) -> Dict[str, Any]:
+    """Persist the entries currently in session into timetable_entries."""
+    from src.services.timetable_service import upsert_entries
+
+    entries = session.get("pending_timetable") or []
+    if not entries:
+        return {"success": False, "message": "No timetable to save."}
+    rows = upsert_entries(
+        org_id=user["org_id"],
+        user_id=user["id"],
+        entries=entries,
+        source=session.get("pending_timetable_source", "whatsapp"),
+        replace_all=True,
+    )
+    # Mark the pending upload as executed.
+    upload_id = session.get("pending_upload_id")
+    if upload_id:
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("SET LOCAL app.org_id = %s;", (str(user["org_id"]),))
+            cur.execute(
+                "UPDATE pending_uploads SET status = 'EXECUTED' WHERE id = %s;",
+                (upload_id,),
+            )
+            conn.commit()
+            cur.close()
+        finally:
+            release_db_connection(conn)
+
+    return {"success": True,
+            "message": f"Saved {rows} class(es). Students can now ask me where you are."}
 
 
 def _execute_pending_upload(user: Dict[str, Any], phone: str,
@@ -330,6 +638,9 @@ def _handle_text(user: Dict[str, Any], phone: str, text: str) -> None:
     session = get_session(phone) or {}
     session.update({"user_id": user["id"], "org_id": user["org_id"]})
     append_history(phone, "user", text)
+    memory_append_log(user["id"], "user", text,
+                      org_id=user.get("org_id"), phone=phone,
+                      channel="whatsapp")
 
     context = {
         "speaker_email":      user.get("email"),
@@ -340,7 +651,9 @@ def _handle_text(user: Dict[str, Any], phone: str, text: str) -> None:
         "history":            session.get("history", [])[-6:],
     }
 
-    parsed_intent = LLMProcessor().process_user_intent(text, context)
+    parsed_intent = LLMProcessor().process_user_intent(
+        text, context, user_id=user["id"]
+    )
     intent = parsed_intent.get("intent")
 
     # Map confirm/discard intents directly when there's a pending upload.
@@ -358,6 +671,147 @@ def _handle_text(user: Dict[str, Any], phone: str, text: str) -> None:
             else "Couldn't complete that. " + (result.get("error") or "")
         )
         _reply(phone, msg, org_id=user.get("org_id"), user_id=user.get("id"))
+        return
+
+    # ----- Timetable onboarding (M2) -----
+    if intent == "onboard_timetable":
+        if user.get("role") not in ("ADMIN", "FACULTY", "SUPER_ADMIN"):
+            _reply(phone,
+                   "Only faculty/admin can publish a timetable.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+        session.update({
+            "user_id":  user["id"],
+            "org_id":   user["org_id"],
+            "state":    "AWAITING_TIMETABLE",
+        })
+        set_session(phone, session)
+        _reply(phone,
+               "Great — send me your weekly timetable now. You can:\n"
+               "• Send a *photo* of your printed timetable\n"
+               "• Send a *voice note* describing it\n"
+               "• Or *type it out* (one class per line: day, time, subject, room)\n\n"
+               "I'll parse it and ask you to confirm before saving.",
+               org_id=user.get("org_id"), user_id=user.get("id"))
+        return
+
+    if intent == "discard_timetable":
+        if session.get("state") in ("AWAITING_TIMETABLE", "AWAITING_TIMETABLE_CONFIRM"):
+            _discard_pending(user, phone, session)
+        clear_session(phone)
+        _reply(phone, "Okay, I've discarded that timetable.",
+               org_id=user.get("org_id"), user_id=user.get("id"))
+        return
+
+    if intent == "confirm_timetable":
+        result = _save_pending_timetable(user, phone, session)
+        clear_session(phone)
+        _reply(phone,
+               result.get("message") or ("Saved." if result.get("success") else "Couldn't save."),
+               org_id=user.get("org_id"), user_id=user.get("id"))
+        return
+
+    # ----- Bulk task assignment (M4) -----
+    if intent == "assign_tasks":
+        if user.get("role") not in ("ADMIN", "SUPER_ADMIN"):
+            _reply(phone,
+                   "Only admins can assign tasks in bulk.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+        session.update({
+            "user_id":  user["id"],
+            "org_id":   user["org_id"],
+            "state":    "AWAITING_TASKS",
+        })
+        set_session(phone, session)
+        _reply(phone,
+               "Got it — send me the assignments now. You can:\n"
+               "• Upload a *spreadsheet*, *PDF* or *Word* file with the task list\n"
+               "• Send a *photo* of a printed sheet\n"
+               "• Send a *voice note* describing the tasks\n"
+               "• Or *type* them out\n\n"
+               "I'll parse them and ask you to confirm before I notify everyone.",
+               org_id=user.get("org_id"), user_id=user.get("id"))
+        return
+
+    if intent == "discard_tasks":
+        if session.get("state") in ("AWAITING_TASKS", "AWAITING_TASKS_CONFIRM"):
+            _discard_pending(user, phone, session)
+        clear_session(phone)
+        _reply(phone, "Okay, I've discarded those tasks.",
+               org_id=user.get("org_id"), user_id=user.get("id"))
+        return
+
+    if intent == "confirm_tasks":
+        result = _send_pending_tasks(user, phone, session)
+        clear_session(phone)
+        _reply(phone,
+               result.get("message") or ("Done." if result.get("success") else "Failed."),
+               org_id=user.get("org_id"), user_id=user.get("id"))
+        return
+
+    # If admin is in AWAITING_TASKS and typed the assignments inline,
+    # parse the text as the task source.
+    if session.get("state") == "AWAITING_TASKS":
+        from src.services.task_extractor import extract_tasks, summarize_tasks
+        extraction = extract_tasks(text)
+        tasks = extraction.get("tasks", [])
+        if not tasks:
+            _reply(phone,
+                   "I couldn't pick out any tasks from that. Try one per line, "
+                   "e.g. 'Prof Sharma: prepare DSA slides by Friday'.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+        upload_id = persist_pending_upload(
+            org_id=user["org_id"],
+            user_id=user["id"],
+            file_path=f"<typed-text:{user['id']}>",
+            parsed={"kind": "text", "text": text, "tasks": tasks},
+            parse_kind="tasks",
+        )
+        session.update({
+            "state":             "AWAITING_TASKS_CONFIRM",
+            "pending_upload_id": upload_id,
+            "pending_tasks":     tasks,
+        })
+        set_session(phone, session)
+        _reply(phone,
+               f"Here's what I got ({len(tasks)} task(s)):\n\n"
+               f"{summarize_tasks(tasks)}\n\n"
+               "Reply *send* to dispatch or *discard* to cancel.",
+               org_id=user.get("org_id"), user_id=user.get("id"))
+        return
+
+    # If the user typed their timetable as plain text while we were awaiting
+    # one, treat that text as the timetable source.
+    if session.get("state") == "AWAITING_TIMETABLE":
+        from src.services.timetable_extractor import (
+            extract_timetable, summarize_timetable,
+        )
+        extraction = extract_timetable(text)
+        entries = extraction.get("entries", [])
+        if not entries:
+            _reply(phone,
+                   "I couldn't pick out any classes from that. Try again with one "
+                   "class per line, e.g. 'Mon 09:00-10:00 DSA Room 204'.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+        upload_id = persist_pending_upload(
+            org_id=user["org_id"],
+            user_id=user["id"],
+            file_path=f"<typed-text:{user['id']}>",
+            parsed={"kind": "text", "text": text, "timetable": entries},
+            parse_kind="timetable",
+        )
+        session.update({
+            "state":             "AWAITING_TIMETABLE_CONFIRM",
+            "pending_upload_id": upload_id,
+            "pending_timetable": entries,
+        })
+        set_session(phone, session)
+        body = (f"Here's what I got:\n\n{summarize_timetable(entries)}\n\n"
+                "Reply *save* to confirm or *discard* to throw it away.")
+        _reply(phone, body, org_id=user.get("org_id"), user_id=user.get("id"))
         return
 
     # NOTE: text-based "yes/ok" affirmation is gone — confirm/discard now
@@ -449,6 +903,64 @@ def _handle_interactive(user: Dict[str, Any], phone: str,
                    org_id=user.get("org_id"), user_id=user.get("id"))
             return
 
+        if btn_id == BTN_CONFIRM_TIMETABLE:
+            result = _save_pending_timetable(user, phone, session)
+            clear_session(phone)
+            _reply(phone,
+                   result.get("message") or ("Saved." if result.get("success") else "Couldn't save."),
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+
+        if btn_id == BTN_DISCARD_TIMETABLE:
+            _discard_pending(user, phone, session)
+            clear_session(phone)
+            _reply(phone, "Okay, I've discarded that timetable.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+
+        if btn_id == BTN_CONFIRM_TASKS:
+            result = _send_pending_tasks(user, phone, session)
+            clear_session(phone)
+            _reply(phone,
+                   result.get("message") or ("Done." if result.get("success") else "Failed."),
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+
+        if btn_id == BTN_DISCARD_TASKS:
+            _discard_pending(user, phone, session)
+            clear_session(phone)
+            _reply(phone, "Okay, I've discarded those tasks.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+
+        # ----- Booking approve/deny (M5) -----
+        if btn_id and btn_id.startswith("sam_booking_"):
+            from src.services.booking_service import approve_booking, deny_booking
+            if user.get("role") not in ("BOOKING_AUTHORITY", "SUPER_ADMIN"):
+                _reply(phone,
+                       "Only the booking authority can approve/deny bookings.",
+                       org_id=user.get("org_id"), user_id=user.get("id"))
+                return
+            try:
+                action, _, raw_id = btn_id[len("sam_booking_"):].partition("_")
+                booking_id = int(raw_id)
+            except (ValueError, AttributeError):
+                _reply(phone, "Couldn't parse that booking action.",
+                       org_id=user.get("org_id"), user_id=user.get("id"))
+                return
+            if action == "approve":
+                booking = approve_booking(booking_id, authority_id=user["id"])
+                msg = (f"Approved booking #{booking_id}." if booking
+                       else f"Booking #{booking_id} not found.")
+            elif action == "deny":
+                booking = deny_booking(booking_id, authority_id=user["id"])
+                msg = (f"Denied booking #{booking_id}." if booking
+                       else f"Booking #{booking_id} not found.")
+            else:
+                msg = "Unknown booking action."
+            _reply(phone, msg, org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+
     # Unknown interactive kind — fall back to text-style routing.
     logger.info("Unhandled interactive payload from %s: %s", phone, interactive)
 
@@ -472,16 +984,32 @@ def handle_inbound_message(phone: str, message: Dict[str, Any]) -> None:
                     body=(message.get("text") or {}).get("body"),
                     metadata={"reason": "unknown_phone"})
         return
-    if user.get("role") not in ("ADMIN", "FACULTY"):
-        queue_whatsapp(phone, "Only faculty/admin users can drive S.A.M. via WhatsApp.",
+    role = user.get("role")
+    if role not in ("ADMIN", "FACULTY", "STUDENT", "BOOKING_AUTHORITY", "SUPER_ADMIN"):
+        queue_whatsapp(phone, "Your account isn't permitted to drive S.A.M. via WhatsApp.",
                        metadata={"channel": "system"})
         log_inbound(phone, message.get("type", "text"),
                     body=(message.get("text") or {}).get("body"),
                     org_id=user.get("org_id"), user_id=user.get("id"),
-                    metadata={"reason": "role_blocked", "role": user.get("role")})
+                    metadata={"reason": "role_blocked", "role": role})
         return
 
     msg_type = message.get("type")
+
+    # Students/booking-authority can ask SAM questions but cannot upload
+    # documents, photos, or voice notes — those are reserved for the
+    # faculty/admin onboarding + bulk-assign flows.
+    if msg_type in ("document", "image", "audio", "video") and role not in (
+        "ADMIN", "FACULTY", "SUPER_ADMIN"
+    ):
+        queue_whatsapp(phone,
+                       "Sorry — only faculty/admin can upload files or voice notes. "
+                       "You can still ask me questions in text.",
+                       metadata={"channel": "system"})
+        log_inbound(phone, msg_type, body=None,
+                    org_id=user.get("org_id"), user_id=user.get("id"),
+                    metadata={"reason": "role_blocked_media", "role": role})
+        return
 
     # Audit every inbound turn (best-effort).
     body_for_audit = None

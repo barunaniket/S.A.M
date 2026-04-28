@@ -1,10 +1,12 @@
 """
 file_ingestor.py
 ----------------
-Parse a faculty-uploaded file (Excel / PDF / text / docx) into a structured
-payload that the LLM can reason about, plus a best-effort attendee extraction.
+Parse a faculty-uploaded file (Excel / PDF / text / docx / image / audio) into
+a structured payload that the LLM can reason about, plus a best-effort
+attendee extraction.
 
-Audio/video transcription is intentionally out of scope for v1.
+Image OCR (Tesseract) and audio transcription (faster-whisper) live in
+src/services/media_transcriber.py — both run locally, no external API.
 """
 
 import json
@@ -16,7 +18,11 @@ from typing import Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SUPPORTED_EXTS = {".xlsx", ".xls", ".pdf", ".txt", ".md", ".docx"}
+_DOC_EXTS   = {".xlsx", ".xls", ".pdf", ".txt", ".md", ".docx"}
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+_AUDIO_EXTS = {".ogg", ".oga", ".mp3", ".m4a", ".wav", ".aac", ".amr"}
+
+SUPPORTED_EXTS = _DOC_EXTS | _IMAGE_EXTS | _AUDIO_EXTS
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +67,29 @@ def _parse_docx(path: Path) -> Dict:
     return {"kind": "docx", "text": "\n".join(paragraphs).strip()}
 
 
+def _parse_image(path: Path) -> Dict:
+    """OCR an image to text via Tesseract."""
+    from src.services.media_transcriber import ocr_image
+    result = ocr_image(path)
+    return {
+        "kind": "image",
+        "text": result["text"],
+        "ocr_confidence": result.get("ocr_confidence"),
+    }
+
+
+def _parse_audio(path: Path) -> Dict:
+    """Transcribe an audio clip via faster-whisper."""
+    from src.services.media_transcriber import transcribe_audio
+    result = transcribe_audio(path)
+    return {
+        "kind": "audio",
+        "text": result["text"],
+        "language": result.get("language"),
+        "duration": result.get("duration"),
+    }
+
+
 def _coerce(value):
     """Make pandas cell values JSON-serializable."""
     import datetime as _dt
@@ -89,8 +118,7 @@ def parse_file(path: str) -> Dict:
     ext = p.suffix.lower()
     if ext not in SUPPORTED_EXTS:
         raise ValueError(
-            f"Unsupported file type: {ext}. Supported: {sorted(SUPPORTED_EXTS)}. "
-            "Audio/video transcription is not yet enabled."
+            f"Unsupported file type: {ext}. Supported: {sorted(SUPPORTED_EXTS)}."
         )
 
     if ext in (".xlsx", ".xls"):
@@ -99,6 +127,10 @@ def parse_file(path: str) -> Dict:
         return _parse_pdf(p)
     if ext == ".docx":
         return _parse_docx(p)
+    if ext in _IMAGE_EXTS:
+        return _parse_image(p)
+    if ext in _AUDIO_EXTS:
+        return _parse_audio(p)
     return _parse_text(p)
 
 
@@ -313,6 +345,15 @@ def summarize(parsed: Dict, attendees: List[Dict]) -> str:
         head = f"Excel file with {len(sheets)} sheet(s), {n_rows} row(s) total."
     elif kind == "pdf":
         head = f"PDF with {parsed.get('pages', 0)} page(s)."
+    elif kind == "image":
+        text = parsed.get("text") or ""
+        conf = parsed.get("ocr_confidence")
+        conf_label = f" (OCR ~{conf}% confidence)" if conf is not None else ""
+        head = f"Image scanned{conf_label}, ~{len(text.split())} words extracted."
+    elif kind == "audio":
+        text = parsed.get("text") or ""
+        dur = parsed.get("duration") or 0
+        head = f"Audio transcribed ({dur:.0f}s), ~{len(text.split())} words."
     else:
         text = parsed.get("text") or ""
         head = f"{kind.upper()} document, ~{len(text.split())} words."

@@ -31,3 +31,6 @@ frontend/.next/
 frontend/out/
 frontend/.env.local
 frontend/*.tsbuildinfo
+
+# graphify host-specific interpreter pin (do not commit)
+graphify-out/.graphify_python

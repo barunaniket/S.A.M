@@ -35,7 +35,7 @@ class LLMProcessor:
     def _build_system_prompt(self) -> str:
         return """
 You are S.A.M. (Smart Administrative Messenger), an intelligent agent for managing meetings and stakeholder communication at a university.
-A faculty-in-charge talks to you, usually over WhatsApp. Your goal is to understand their commands and convert them into structured JSON actions.
+A faculty/admin/student/booking-authority user talks to you, usually over WhatsApp. Your goal is to understand their commands and convert them into structured JSON actions.
 
 ### CAPABILITIES:
 1. Schedule meetings (create_meeting)
@@ -49,6 +49,18 @@ A faculty-in-charge talks to you, usually over WhatsApp. Your goal is to underst
 8. List all saved groups (list_groups)
 9. Confirm a previously parsed file/upload action (confirm_upload)
 10. Discard a previously parsed file/upload action (discard_upload)
+11. Begin timetable onboarding (onboard_timetable) — user wants to set up or replace their weekly timetable. Triggered by phrases like "set up my timetable", "upload my schedule", "let me give you my timetable".
+12. Confirm a parsed timetable (confirm_timetable) — user approves the parsed weekly grid that S.A.M. echoed back.
+13. Discard a parsed timetable (discard_timetable) — user rejects the parsed grid.
+14. Query a faculty member's current/scheduled location or availability (query_faculty_status). Triggered by:
+    - "where is Prof Sharma now?"
+    - "is Prof Mehta free at 3 PM?"
+    - "I need to meet Dr. Iyer — when is she free?"
+    Extract `target_faculty_name` (the faculty being asked about) and `query_time` (ISO 8601, default = current reference time when none given).
+15. Begin bulk task assignment (assign_tasks) — admin wants to assign tasks to faculty/staff in bulk. Triggered by phrases like "I want to assign tasks", "give out duties", "delegate work", "set up assignments". After this, the user uploads a file or speaks/writes the assignments and S.A.M. extracts {assignee, task, deadline} tuples.
+16. Confirm extracted task assignments (confirm_tasks) — admin approves the parsed list.
+17. Discard extracted task assignments (discard_tasks).
+18. Cancel a class today (cancel_class) — faculty wants to cancel today's class. Extract `target_subject` (the subject being cancelled, e.g. "DSA", "Compilers") and optionally `body` (the reason). Triggered by phrases like "cancel today's DSA class", "I'm sick — cancel my 11am class", "cancel Compilers today".
 
 ### RULES:
 - Output ONLY valid JSON. No markdown, no code fences, no commentary.
@@ -58,10 +70,15 @@ A faculty-in-charge talks to you, usually over WhatsApp. Your goal is to underst
 - Missing Info: If critical info is missing for a 'create' / 'broadcast' intent, set intent to "clarification_needed".
 - If the session context contains a `pending_upload_id`, prefer the intents `confirm_upload` or `discard_upload`
   when the user replies affirmatively/negatively about the uploaded file.
+- If the session context has `state="AWAITING_TIMETABLE_CONFIRM"`, prefer
+  `confirm_timetable` or `discard_timetable` for yes/no replies.
+- If the session context has `state="AWAITING_TASKS_CONFIRM"`, prefer
+  `confirm_tasks` or `discard_tasks` for yes/no replies.
+- If the user's question is about a colleague's whereabouts or availability and does NOT propose any new event, prefer `query_faculty_status` over `create_meeting` or `list_meetings`.
 
 ### OUTPUT SCHEMA:
 {
-  "intent": "create_meeting" | "reschedule_meeting" | "cancel_meeting" | "list_meetings" | "send_email" | "broadcast_notification" | "create_group" | "list_groups" | "confirm_upload" | "discard_upload" | "clarification_needed",
+  "intent": "create_meeting" | "reschedule_meeting" | "cancel_meeting" | "list_meetings" | "send_email" | "broadcast_notification" | "create_group" | "list_groups" | "confirm_upload" | "discard_upload" | "onboard_timetable" | "confirm_timetable" | "discard_timetable" | "query_faculty_status" | "assign_tasks" | "confirm_tasks" | "discard_tasks" | "cancel_class" | "clarification_needed",
   "entities": {
     "title": "string or null",
     "participants": ["name1", "name2"],
@@ -73,6 +90,9 @@ A faculty-in-charge talks to you, usually over WhatsApp. Your goal is to underst
     "target_role": "ADMIN | FACULTY | STUDENT or null",
     "target_department": "string or null",
     "target_group_name": "string or null",
+    "target_faculty_name": "string or null",
+    "target_subject": "string or null",
+    "query_time": "ISO_8601 or null",
     "group_name": "string or null",
     "members_emails": ["email1", "email2"],
     "description": "string or null",
@@ -104,10 +124,25 @@ but leave start_time null — the system will fall back to a one-shot broadcast.
             cleaned = re.sub(r"```$", "", cleaned)
         return cleaned.strip()
 
-    def process_user_intent(self, user_input: str, session_context: dict = None) -> dict:
+    def process_user_intent(self, user_input: str, session_context: dict = None,
+                            user_id: int = None) -> dict:
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        user_message = (
+        # Persistent per-user memory injected at the top of the user message.
+        # Lazy import to avoid a hard dependency cycle if memory_store is
+        # being initialised separately.
+        profile_block = ""
+        if user_id:
+            try:
+                from src.services.memory_store import build_profile_prompt_block
+                profile_block = build_profile_prompt_block(user_id)
+            except Exception as e:  # never let memory failure break LLM calls
+                logger.warning("Failed to load profile block for user %s: %s", user_id, e)
+
+        user_message = ""
+        if profile_block:
+            user_message += f"{profile_block}\n\n"
+        user_message += (
             f"### CURRENT CONTEXT:\n"
             f"- Current Reference Time: {current_time}\n"
             f'- User Input: "{user_input}"\n'

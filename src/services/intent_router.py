@@ -10,11 +10,15 @@ and by the WhatsApp orchestrator.
 Supported intents:
     create_meeting, reschedule_meeting, cancel_meeting,
     list_meetings, send_email,
-    broadcast_notification, confirm_upload, discard_upload,
+    broadcast_notification, create_group, list_groups,
+    confirm_upload, discard_upload,
+    onboard_timetable, confirm_timetable, discard_timetable,
+    query_faculty_status,
     clarification_needed
 """
 
 import logging
+from datetime import datetime
 
 from src.services.broadcast_service import broadcast_by_filters
 from src.services.direct_email_service import DirectEmailService
@@ -61,6 +65,7 @@ def route_intent(intent_result: dict, scheduler_email: str,
             end_datetime=entities["end_time"],
             participant_names=entities.get("participants", []),
             scheduler_email=scheduler_email,
+            org_id=org_id,
         )
 
     # ------------------------------------------------------------------
@@ -83,6 +88,7 @@ def route_intent(intent_result: dict, scheduler_email: str,
             new_start_datetime=entities["start_time"],
             new_end_datetime=entities["end_time"],
             scheduler_email=scheduler_email,
+            org_id=org_id,
         )
 
     # ------------------------------------------------------------------
@@ -183,16 +189,131 @@ def route_intent(intent_result: dict, scheduler_email: str,
         return {"success": True, "data": groups, "message": f"Your groups: {names}."}
 
     # ------------------------------------------------------------------
-    elif intent in ("confirm_upload", "discard_upload"):
-        # These are handled by the WhatsApp orchestrator itself, which has
-        # the session/pending_upload context. If we're here it means the
-        # caller forgot to special-case it.
+    elif intent in ("confirm_upload", "discard_upload",
+                    "onboard_timetable",
+                    "confirm_timetable", "discard_timetable",
+                    "assign_tasks", "confirm_tasks", "discard_tasks"):
+        # (cancel_class is handled below — it can be answered by REST too,
+        # because cancellation_service has all the context it needs.)
+        # These are stateful flows handled by the WhatsApp orchestrator,
+        # which holds the session + pending_upload context. If we land here
+        # it means the caller is the REST router which doesn't have that
+        # context.
         return {
             "success":             False,
             "needs_clarification": True,
-            "message":             "Upload-confirmation intents must be handled "
+            "message":             "Stateful conversational intents are handled "
                                    "by the WhatsApp orchestrator, not the REST router.",
         }
+
+    # ------------------------------------------------------------------
+    elif intent == "cancel_class":
+        # FACULTY/ADMIN only — the orchestrator should already have gated
+        # the inbound by role, but defend in depth.
+        if org_id is None:
+            return {"success": False, "error": "cancel_class requires org_id context."}
+        from src.services.cancellation_service import cancel_class_today
+        from src.utils.db_handler import get_user_by_email
+
+        subject = entities.get("target_subject") or entities.get("title")
+        if not subject:
+            return {"success": False, "needs_clarification": True,
+                    "message": "Which class do you want to cancel? "
+                               "(e.g. 'cancel DSA today')"}
+
+        faculty = get_user_by_email(scheduler_email) if scheduler_email else None
+        if not faculty:
+            return {"success": False,
+                    "message": "I couldn't identify your account."}
+
+        return cancel_class_today(
+            org_id=org_id,
+            faculty_id=faculty["id"],
+            subject_query=subject,
+            faculty_name=faculty.get("full_name"),
+            reason=entities.get("body"),
+        )
+
+    elif intent == "query_faculty_status":
+        # "Where is Prof Sharma now?" / "Is Prof Mehta free at 3?"
+        # Resolves faculty name fuzzily, looks up timetable + active meeting
+        # at the requested time. Available to STUDENT, FACULTY, ADMIN.
+        if org_id is None:
+            return {"success": False, "error": "query_faculty_status requires org_id context."}
+
+        from src.services.timetable_service import (
+            format_busy_status,
+            resolve_faculty_by_name,
+            who_is_busy_at,
+        )
+
+        target = entities.get("target_faculty_name") or entities.get("title")
+        if not target and entities.get("participants"):
+            target = entities["participants"][0]
+        if not target:
+            return {"success": False, "needs_clarification": True,
+                    "message": "Which faculty member are you asking about?"}
+
+        candidates = resolve_faculty_by_name(org_id, target)
+        if not candidates:
+            return {"success": True,
+                    "message": f"I couldn't find anyone matching \"{target}\". "
+                               "Try the full name or department."}
+
+        # Multi-hit disambiguation when top score is close to runner-up.
+        if len(candidates) > 1 and (
+            candidates[0]["score"] - candidates[1]["score"] < 6
+        ):
+            preview = ", ".join(
+                f"{c['full_name']} ({c.get('department') or c['role']})"
+                for c in candidates[:5]
+            )
+            return {"success": True, "needs_clarification": True,
+                    "message": f"I found a few people matching \"{target}\": "
+                               f"{preview}. Which one?"}
+
+        faculty = candidates[0]
+
+        # Parse the requested time. LLM should hand us ISO; if not, default
+        # to "right now".
+        when_dt = None
+        when_label = "right now"
+        qt = entities.get("query_time")
+        if qt:
+            try:
+                when_dt = datetime.fromisoformat(qt.replace("Z", ""))
+                when_label = f"at {when_dt.strftime('%H:%M on %A')}"
+            except ValueError:
+                when_dt = None
+
+        entry = who_is_busy_at(faculty["id"], when_dt)
+        msg = format_busy_status(faculty["full_name"], entry, at_label=when_label)
+
+        # Layer in active Google Calendar meetings (best-effort).
+        try:
+            mtgs = search_meetings({"participants": [faculty.get("email")]}) or {}
+            data = mtgs.get("data") or []
+            now = when_dt or datetime.now()
+            active = []
+            for m in data if isinstance(data, list) else []:
+                start = m.get("start_time") or m.get("start")
+                end = m.get("end_time") or m.get("end")
+                if not start or not end:
+                    continue
+                try:
+                    s = datetime.fromisoformat(str(start).replace("Z", ""))
+                    e = datetime.fromisoformat(str(end).replace("Z", ""))
+                except ValueError:
+                    continue
+                if s <= now < e:
+                    active.append(m.get("title") or "a meeting")
+            if active:
+                msg += f" Also in a Calendar meeting: {active[0]}."
+        except Exception:
+            logger.debug("Calendar overlay failed for faculty status query", exc_info=True)
+
+        return {"success": True, "data": {"faculty": faculty, "entry": entry},
+                "message": msg}
 
     # ------------------------------------------------------------------
     elif intent == "clarification_needed":

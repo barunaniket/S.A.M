@@ -133,10 +133,12 @@ def get_calendar_service(user_email: str = None, credentials_dict: dict = None):
     return build("calendar", "v3", credentials=creds)
 
 
-def create_jwt_token(user_id: int, org_id: int, email: str = None) -> str:
+def create_jwt_token(user_id: int, org_id: int, email: str = None,
+                     role: str = None) -> str:
     """
-    Create a signed JWT with user_id and org_id claims.
-    The frontend should store this and send it as Bearer token on every request.
+    Create a signed JWT with user_id, org_id, and role claims.
+    The frontend stores this and sends it as Bearer token on every request.
+    The middleware reads `role` to populate request.state.role for RBAC.
     """
     expire = datetime.now(timezone.utc) + timedelta(
         minutes=Config.ACCESS_TOKEN_EXPIRE_MINUTES
@@ -148,6 +150,8 @@ def create_jwt_token(user_id: int, org_id: int, email: str = None) -> str:
     }
     if email:
         payload["email"] = email
+    if role:
+        payload["role"] = role
 
     return jwt.encode(payload, Config.SECRET_KEY, algorithm=Config.ALGORITHM)
 

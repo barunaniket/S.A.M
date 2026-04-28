@@ -4,23 +4,50 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Calendar,
+  CalendarRange,
+  ClipboardList,
+  DoorOpen,
   MessageSquare,
   Megaphone,
   Settings,
+  ShieldCheck,
+  Upload,
   Users,
   UserSquare2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/useAuth";
 
-const items = [
+type Role = "ADMIN" | "FACULTY" | "STUDENT" | "SUPER_ADMIN" | "BOOKING_AUTHORITY";
+type SidebarItem = {
+  href: string;
+  label: string;
+  icon: typeof Calendar;
+  exact?: boolean;
+  /** Roles permitted to see this item. Omit / empty array = visible to all. */
+  roles?: Role[];
+};
+
+const items: SidebarItem[] = [
   { href: "/app", label: "Chat", icon: MessageSquare, exact: true },
   { href: "/app/meetings", label: "Meetings", icon: Calendar },
   { href: "/app/faculty", label: "Faculty", icon: UserSquare2 },
   { href: "/app/groups", label: "Groups", icon: Users },
   { href: "/app/broadcasts", label: "Broadcasts", icon: Megaphone },
+  { href: "/app/timetable/upload", label: "My timetable", icon: Upload, roles: ["FACULTY", "ADMIN"] },
+  { href: "/app/admin/tasks", label: "Task assignments", icon: ClipboardList, roles: ["ADMIN"] },
+  { href: "/app/booking/queue", label: "Booking queue", icon: DoorOpen, roles: ["BOOKING_AUTHORITY"] },
+  { href: "/app/super-admin/calendar", label: "Academic calendar", icon: CalendarRange, roles: ["SUPER_ADMIN"] },
+  { href: "/app/super-admin/users", label: "User management", icon: ShieldCheck, roles: ["SUPER_ADMIN"] },
   { href: "/app/settings", label: "Settings", icon: Settings },
 ];
+
+function visibleItems(role: string | null | undefined): SidebarItem[] {
+  const r = (role || "").toUpperCase();
+  // SUPER_ADMIN sees everything; otherwise filter by item.roles.
+  if (r === "SUPER_ADMIN") return items;
+  return items.filter((it) => !it.roles || it.roles.length === 0 || it.roles.includes(r as Role));
+}
 
 export function Sidebar() {
   const pathname = usePathname();
@@ -36,7 +63,7 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 space-y-0.5 p-3">
-        {items.map((item) => {
+        {visibleItems(user?.role).map((item) => {
           const active = item.exact
             ? pathname === item.href
             : pathname?.startsWith(item.href);

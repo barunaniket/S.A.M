@@ -73,6 +73,7 @@ async def auth_callback(payload: LoginRequest):
         user_id=user["id"],
         org_id=user["org_id"],
         email=email,
+        role=user.get("role"),
     )
 
     return {

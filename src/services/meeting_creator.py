@@ -257,6 +257,7 @@ def create_meeting(
     participant_names: list,
     scheduler_email: str,
     recurrence: Optional[dict] = None,
+    org_id: Optional[int] = None,
 ) -> dict:
     """
     Create a new Google Calendar event.
@@ -280,6 +281,20 @@ def create_meeting(
     """
 
     try:
+        # 0. Academic calendar guard: reject scheduling on holidays / exams.
+        if org_id:
+            from datetime import datetime as _dt
+            from src.services.academic_calendar import block_message, is_blocked
+            try:
+                start_dt = _dt.fromisoformat(str(start_datetime).replace("Z", ""))
+                blocker = is_blocked(org_id, start_dt)
+                if blocker:
+                    return {"success": False, "error": "academic_event_block",
+                            "message": block_message(blocker),
+                            "blocked_by": blocker}
+            except ValueError:
+                pass
+
         # 1. Resolve display names → emails
         participants      = resolve_participants(participant_names)
         participant_emails = [p["email"] for p in participants if p.get("email")]
