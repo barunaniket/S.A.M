@@ -60,6 +60,14 @@ class Config:
     WHATSAPP_APP_SECRET = os.getenv("WHATSAPP_APP_SECRET")
     WHATSAPP_GRAPH_VERSION = os.getenv("WHATSAPP_GRAPH_VERSION", "v20.0")
 
+    # Telegram Bot API. Optional — if TELEGRAM_BOT_TOKEN is unset the poller
+    # refuses to start and the /me/telegram/* routes return "not configured".
+    # This keeps existing dev setups working without a Telegram bot.
+    TELEGRAM_BOT_TOKEN     = os.getenv("TELEGRAM_BOT_TOKEN")
+    TELEGRAM_BOT_USERNAME  = os.getenv("TELEGRAM_BOT_USERNAME")  # @-less, used to build deep links
+    TELEGRAM_API_BASE      = os.getenv("TELEGRAM_API_BASE", "https://api.telegram.org")
+    TELEGRAM_POLL_TIMEOUT  = int(os.getenv("TELEGRAM_POLL_TIMEOUT", "25"))
+
     # Uploads
     UPLOAD_DIR = os.getenv("UPLOAD_DIR", "data/uploads")
 

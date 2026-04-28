@@ -179,7 +179,7 @@ def list_members(org_id: int, group_id: int) -> List[Dict[str, Any]]:
         cur.execute(
             """
             SELECT u.id, u.email, u.full_name AS name, u.phone_number AS phone,
-                   u.role, u.department
+                   u.telegram_chat_id, u.role, u.department
               FROM users u
               JOIN user_group_members m ON m.user_id = u.id
              WHERE m.group_id = %s AND u.org_id = %s

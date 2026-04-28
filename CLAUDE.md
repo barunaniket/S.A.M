@@ -27,7 +27,8 @@ The v4–v8 release expanded this with role-aware extensions: `SUPER_ADMIN`, `BO
 ## Architecture in one breath
 
 - **API**: FastAPI (`src/main.py`) → JWT middleware → `src/services/intent_router.py` for natural-language → handler dispatch.
-- **Worker**: Celery (`src/worker.py`) consumes Redis queues for email + WhatsApp fan-out; `beat` container ticks `tick_user_briefings` every 5 min.
+- **Worker**: Celery (`src/worker.py`) consumes Redis queues for email + WhatsApp + Telegram fan-out; `beat` container ticks `tick_user_briefings` every 5 min.
+- **Telegram channel**: mirrors the WhatsApp surface 1:1 — `telegram_service.py`, `telegram_queue.py`, `telegram_orchestrator.py`, `telegram_poller.py` (long-poll worker, no public webhook needed). Pairing flow: `/api/v1/me/telegram/pair` issues a 6-char code; user DMs `/start CODE` to bind `users.telegram_chat_id`. Same `intent_router`, `file_ingestor`, and `whatsapp_audit` (with `channel='telegram'`) — no new abstractions.
 - **Datastore**: PostgreSQL 15 with row-level security per `org_id`; Redis 7 for queues, distributed locks (`src/utils/concurrency.py`), and the conversation store.
 - **LLM**: NVIDIA OpenAI-compatible endpoint (`meta/llama-3.3-70b-instruct` default); Gemini optional. `src/services/llm_processor.py` extracts intent; `src/services/clarification_agent.py` disambiguates.
 - **External**: Google Calendar (events + freebusy + self-healing reconcile in `src/utils/self_healing_calendar.py`), Gmail SMTP for `.ics` invites, Meta WhatsApp Cloud API.
@@ -63,9 +64,23 @@ python scripts/migrate_v5_timetable.py
 python scripts/migrate_v6_academic_calendar.py
 python scripts/migrate_v7_tasks.py
 python scripts/migrate_v8_booking_briefing.py
+python scripts/migrate_v9_telegram.py
 python scripts/seed_db.py                           # optional sample data
 ```
 After v4+: re-login so the JWT picks up the new `role` claim.
+
+### Telegram (optional)
+```bash
+# 1. Create a bot via @BotFather, copy the HTTP token
+# 2. Set in .env:
+#       TELEGRAM_BOT_TOKEN=123456:ABC...
+#       TELEGRAM_BOT_USERNAME=samscheduler_bot   # @-less, used to build deep links
+# 3. Run migration v9, then:
+docker compose up -d telegram telegram_queue_worker
+#       OR for host-side dev:
+python -m src.services.telegram_poller
+# 4. Web UI → /app/settings → Telegram tab → Connect → DM the bot /start CODE
+```
 
 ### Tests
 ```bash

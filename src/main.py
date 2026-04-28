@@ -31,6 +31,7 @@ from src.api.routes import (
     bookings as bookings_routes,
     admin_users as admin_users_routes,
     preferences as preferences_routes,
+    telegram_link as telegram_link_routes,
 )
 
 # ---------------------------------------------------------------------------
@@ -80,6 +81,7 @@ app.include_router(tasks_routes.router,        prefix="/api/v1", tags=["Tasks"])
 app.include_router(bookings_routes.router,     prefix="/api/v1", tags=["Bookings"])
 app.include_router(admin_users_routes.router,  prefix="/api/v1", tags=["Admin Users"])
 app.include_router(preferences_routes.router,  prefix="/api/v1", tags=["Preferences"])
+app.include_router(telegram_link_routes.router, prefix="/api/v1/me/telegram", tags=["Telegram"])
 
 # ---------------------------------------------------------------------------
 # Health check

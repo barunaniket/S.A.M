@@ -81,3 +81,56 @@ def already_seen(message_id: str) -> bool:
     # set returns True if newly created, False if already existed
     created = c.set(key, "1", nx=True, ex=DEDUP_TTL_SECONDS)
     return not created
+
+
+# ---------------------------------------------------------------------------
+# Telegram-channel parallels. Same Redis instance, separate key prefix so
+# the two channels can't read each other's session even if a user happens
+# to have a Telegram chat_id that collides with someone's phone digits.
+# ---------------------------------------------------------------------------
+
+def _key_tg(chat_id) -> str:
+    return f"tg:session:{chat_id}"
+
+
+def get_session_tg(chat_id) -> Dict[str, Any]:
+    raw = _client().get(_key_tg(chat_id))
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+
+
+def set_session_tg(chat_id, data: Dict[str, Any]) -> None:
+    _client().setex(_key_tg(chat_id), SESSION_TTL_SECONDS, json.dumps(data, default=str))
+
+
+def clear_session_tg(chat_id) -> None:
+    _client().delete(_key_tg(chat_id))
+
+
+def append_history_tg(chat_id, role: str, content: str,
+                      extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    session = get_session_tg(chat_id)
+    history = session.get("history", [])
+    history.append({
+        "role":    role,
+        "content": content,
+        "ts":      int(time.time()),
+        **(extra or {}),
+    })
+    session["history"] = history[-HISTORY_LIMIT:]
+    set_session_tg(chat_id, session)
+    return session
+
+
+def already_seen_tg(update_id) -> bool:
+    """Telegram's update_id dedup — analogous to already_seen for WA msg ids."""
+    if not update_id:
+        return False
+    c = _client()
+    key = f"tg:update:{update_id}"
+    created = c.set(key, "1", nx=True, ex=DEDUP_TTL_SECONDS)
+    return not created
