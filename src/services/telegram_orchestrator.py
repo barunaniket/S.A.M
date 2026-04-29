@@ -97,6 +97,28 @@ def resolve_user_by_chat_id(chat_id: int) -> Optional[Dict[str, Any]]:
 _PAIR_RE = re.compile(r"^/start(?:\s+([A-Z0-9]{4,8}))?\s*$", re.IGNORECASE)
 
 
+def _set_user_batch(user_id: int, batch: str) -> bool:
+    """Persist a student's batch selection. Returns True on success."""
+    if not batch or len(batch.strip()) > 32:
+        return False
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE users SET batch = %s, updated_at = NOW() WHERE id = %s;",
+            (batch.strip(), user_id),
+        )
+        conn.commit()
+        cur.close()
+        return True
+    except Exception:
+        conn.rollback()
+        logger.exception("Failed to set batch for user %s", user_id)
+        return False
+    finally:
+        release_db_connection(conn)
+
+
 def _try_consume_pairing_code(code: str, chat_id: int,
                               telegram_username: Optional[str]) -> Optional[Dict[str, Any]]:
     """
@@ -166,6 +188,41 @@ def _onboarding_message() -> str:
         "4. Send <code>/start CODE</code> here\n\n"
         "Once linked, you can chat with me to schedule meetings, run "
         "broadcasts, upload your timetable, and more."
+    )
+
+
+def _start_chat_first_onboarding(chat_id: int,
+                                 telegram_username: Optional[str]) -> None:
+    """
+    Kick off the Google-OAuth-first sign-up flow for an unknown chat.
+
+    Generates an onboarding token, sends the OAuth URL. After the user
+    completes Google sign-in, the /auth/callback handler binds the
+    chat_id and pushes a welcome DM (handled by services.onboarding).
+    """
+    try:
+        from src.services.onboarding import start_onboarding
+        result = start_onboarding(
+            channel="telegram",
+            identifier=str(chat_id),
+            telegram_username=telegram_username,
+        )
+    except Exception:
+        logger.exception("start_onboarding failed for chat %s", chat_id)
+        send_text(chat_id,
+                  "Sorry — something went wrong starting sign-up. "
+                  "Please try /start again in a moment.")
+        return
+
+    auth_url = result.get("auth_url")
+    send_text(
+        chat_id,
+        "👋 Welcome to <b>S.A.M</b> — your faculty scheduling assistant.\n\n"
+        "First, sign in with your <b>institutional Google account</b> so I can "
+        "verify who you are and write to your calendar:\n\n"
+        f'<a href="{auth_url}">🔗 Sign in with Google</a>\n\n'
+        "<i>The link expires in 15 minutes. Once you're back, I'll know who "
+        "you are and we can finish setup here in chat.</i>",
     )
 
 
@@ -519,7 +576,9 @@ def _handle_text(chat_id: int, text: str,
     if pair:
         code = (pair.group(1) or "").upper()
         if not code:
-            # /start with no code — check if already paired.
+            # /start with no code:
+            #   - already linked → friendly re-greeting
+            #   - unknown chat   → kick off chat-first Google OAuth onboarding
             if user:
                 _reply(chat_id,
                        f"You're already linked as <b>{user.get('full_name')}</b>. "
@@ -527,7 +586,7 @@ def _handle_text(chat_id: int, text: str,
                        "<i>“my agenda today”</i> or <i>“set up my timetable”</i>.",
                        org_id=user.get("org_id"), user_id=user.get("id"))
             else:
-                send_text(chat_id, _onboarding_message())
+                _start_chat_first_onboarding(chat_id, telegram_username)
             return
 
         bound = _try_consume_pairing_code(code, chat_id, telegram_username)
@@ -562,12 +621,34 @@ def _handle_text(chat_id: int, text: str,
                   "Need to disconnect? Use <i>Settings → Telegram</i> in the web app.")
         return
 
-    # User must be paired beyond this point.
+    # User must be paired beyond this point. Anyone DMing the bot for the
+    # first time without a pairing code goes through chat-first onboarding.
     if not user:
-        send_text(chat_id, _onboarding_message())
+        _start_chat_first_onboarding(chat_id, telegram_username)
         log_inbound(str(chat_id), "text", text,
                     metadata={"reason": "unpaired_chat", "chat_id": chat_id},
                     channel="telegram")
+        return
+
+    # ---- AWAITING_BATCH: student post-onboarding batch capture ----
+    session_for_state = get_session_tg(chat_id) or {}
+    if session_for_state.get("state") == "AWAITING_BATCH":
+        # Accept short alphanum batch codes only; ignore anything that
+        # looks like a sentence so the student can re-prompt.
+        candidate = text.strip()
+        if 2 <= len(candidate) <= 16 and not any(ch in candidate for ch in (" ", "?", "!")):
+            if _set_user_batch(user["id"], candidate):
+                clear_session_tg(chat_id)
+                _reply(chat_id,
+                       f"✅ Saved your batch as <b>{candidate}</b>. You're all set.\n\n"
+                       "You can ask me where any teacher will be, see your batch's "
+                       "announcements, or get help — try <code>/help</code>.",
+                       org_id=user.get("org_id"), user_id=user.get("id"))
+                return
+        _reply(chat_id,
+               "Hmm, that doesn't look like a batch code. Reply with just the "
+               "code (e.g. <code>CSE-3A</code>, <code>ECE-2B</code>).",
+               org_id=user.get("org_id"), user_id=user.get("id"))
         return
 
     # ---- LLM intent path (mirrors whatsapp_orchestrator._handle_text) ----

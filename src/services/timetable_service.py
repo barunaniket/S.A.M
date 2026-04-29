@@ -266,7 +266,7 @@ def resolve_faculty_by_name(org_id: int, query: str,
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT id, full_name, email, role, department
+            SELECT id, full_name, email, role, department, office_location
               FROM users
              WHERE org_id = %s
                AND role IN ('FACULTY','ADMIN','SUPER_ADMIN');

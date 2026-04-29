@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from src.services.onboarding import complete_onboarding, parse_onboarding_state
 from src.utils.google_auth import GoogleAuthService, create_jwt_token
 from src.utils.db_handler import upsert_google_user
 
@@ -29,12 +30,17 @@ async def auth_callback(payload: LoginRequest):
     """
     Handles the OAuth callback from the frontend.
 
-    Flow:
-    1. Exchange the temporary code for Google tokens.
-    2. Fetch the user's Google profile.
-    3. Persist / update user in DB (upsert).
-    4. Issue our own JWT (contains user_id + org_id).
-    5. Return the JWT to the frontend.
+    Two flows share this endpoint:
+
+      1. Web-first (default): exchange code → upsert user → issue JWT →
+         frontend stores JWT and redirects to /app.
+
+      2. Chat-first onboarding (state == 'onboard:tg:<token>'): exchange
+         code → consume the onboarding token to bind the originating
+         channel identifier (telegram_chat_id) to the matched/created
+         user → push a welcome DM. Returns `{onboarded: true, channel: ...}`
+         instead of a JWT so the frontend shows a "Return to Telegram"
+         success page rather than redirecting into the SPA.
     """
     # 1. Exchange code for tokens
     tokens = await auth_service.exchange_code(payload.code)
@@ -55,7 +61,34 @@ async def auth_callback(payload: LoginRequest):
     # 3. Encrypt the refresh token before storing
     encrypted_rt = auth_service.encrypt_token(refresh_token) if refresh_token else None
 
-    # 4. Upsert user in DB
+    # ----- Branch: chat-first onboarding -----
+    onboarding = parse_onboarding_state(payload.state)
+    if onboarding:
+        channel, token = onboarding
+        user = complete_onboarding(
+            token=token,
+            google_userinfo=user_info,
+            access_token=access_token,
+            encrypted_refresh_token=encrypted_rt,
+        )
+        if not user:
+            raise HTTPException(
+                status_code=400,
+                detail="Onboarding token is invalid, expired, or already used.",
+            )
+        return {
+            "message": "Onboarding complete",
+            "onboarded": True,
+            "channel": channel,
+            "user": {
+                "id": user["id"],
+                "name": user.get("full_name"),
+                "email": user["email"],
+                "role": user.get("role"),
+            },
+        }
+
+    # ----- Default: web-first OAuth (issue JWT) -----
     try:
         user = upsert_google_user(
             email=email,
@@ -68,7 +101,6 @@ async def auth_callback(payload: LoginRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to persist user: {str(e)}")
 
-    # 5. Issue our own JWT
     jwt_token = create_jwt_token(
         user_id=user["id"],
         org_id=user["org_id"],

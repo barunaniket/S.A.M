@@ -65,9 +65,34 @@ python scripts/migrate_v6_academic_calendar.py
 python scripts/migrate_v7_tasks.py
 python scripts/migrate_v8_booking_briefing.py
 python scripts/migrate_v9_telegram.py
-python scripts/seed_db.py                           # optional sample data
+python scripts/migrate_v10_demo.py
+python scripts/seed_demo.py                         # demo cast (use instead of seed_db.py for the prototype)
 ```
 After v4+: re-login so the JWT picks up the new `role` claim.
+
+### Chat-first onboarding (Telegram, v10)
+
+Anyone DMing the bot for the first time goes straight through Google OAuth — no
+web pairing code needed. `telegram_orchestrator._start_chat_first_onboarding`
+calls `services/onboarding.start_onboarding`, which writes an
+`onboarding_tokens` row and returns a Google OAuth URL with
+`state=onboard:tg:<token>`. The `/auth/callback` route detects that prefix and
+routes through `complete_onboarding`, which matches the user by email against
+the pre-seeded roster (institutional Gmail = verification), binds
+`users.telegram_chat_id`, and pushes a welcome DM. Faculty without a timetable
+land in `AWAITING_TIMETABLE`; students without a batch land in
+`AWAITING_BATCH`. The web-first `/start CODE` pairing path is still wired in
+parallel for users who came in via the web first.
+
+### Period-aware faculty lookup (v10)
+
+`src/utils/periods.py` hardcodes the bell schedule (1st 09:00-09:50, … 4th
+12:00-12:50, lunch, 5th 14:00-14:50, …). The LLM `query_faculty_status` intent
+now extracts `query_period` (1-8) and `query_day_keyword` ("today", "tomorrow",
+weekday) alongside `query_time`. `intent_router` resolves the period to a
+datetime, calls `who_is_busy_at`, and falls back to `users.office_location`
+when the faculty has no class — "Dr Sharma doesn't have a class during 4th
+period — she should be in Faculty Block, Room 312."
 
 ### Telegram (optional)
 ```bash

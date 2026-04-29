@@ -578,3 +578,60 @@ def send_reminder_1h(
                 print(f"[reminder_1h] Telegram queue failed for {email}: {e}")
 
     return f"1h reminders sent for meeting {meeting_id}"
+
+
+@celery_app.task(name="send_reminder_10min")
+def send_reminder_10min(
+    meeting_id: str,
+    title: str,
+    start_time: str,
+    participant_emails: list,
+):
+    """
+    10-minute "head's up" reminder. Fires close enough to the meeting that
+    even a forgetful attendee can still make it. Same fan-out as the 1h
+    reminder — in-app notification + WhatsApp + Telegram.
+
+    Useful for the demo: schedule a meeting at NOW+15min and the 10-min
+    reminder fires live on stage.
+    """
+    from src.services.notification import create_notification
+    from src.services.whatsapp_queue import queue_whatsapp
+    from src.services.telegram_queue import queue_telegram
+    from src.utils.db_handler import get_user_by_email
+
+    short_msg = f"⏰ Heads up — \"{title}\" starts in 10 minutes ({start_time})."
+
+    for email in participant_emails:
+        user = None
+        try:
+            user = get_user_by_email(email)
+            if user:
+                create_notification(
+                    user_id=user["id"],
+                    message=short_msg,
+                    notification_type="reminder",
+                )
+        except Exception as e:
+            print(f"[reminder_10min] in-app failed for {email}: {e}")
+
+        meta = {
+            "channel":    "reminder",
+            "type":       "reminder_10min",
+            "intent":     "reminder",
+            "meeting_id": meeting_id,
+            "org_id":     (user or {}).get("org_id"),
+            "user_id":    (user or {}).get("id"),
+        }
+        if user and user.get("phone_number"):
+            try:
+                queue_whatsapp(user["phone_number"], short_msg, metadata=meta)
+            except Exception as e:
+                print(f"[reminder_10min] WhatsApp queue failed for {email}: {e}")
+        if user and user.get("telegram_chat_id"):
+            try:
+                queue_telegram(int(user["telegram_chat_id"]), short_msg, metadata=meta)
+            except Exception as e:
+                print(f"[reminder_10min] Telegram queue failed for {email}: {e}")
+
+    return f"10min reminders sent for meeting {meeting_id}"

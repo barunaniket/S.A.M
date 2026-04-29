@@ -222,15 +222,20 @@ def _schedule_reminders(
     start_datetime: str,
     participant_emails: list,
 ):
-    """Schedule Celery reminder tasks at 24h and 1h before the meeting."""
+    """Schedule Celery reminder tasks at 24h, 1h, and 10min before the meeting."""
     try:
-        from src.worker import send_reminder_24h, send_reminder_1h
+        from src.worker import (
+            send_reminder_24h,
+            send_reminder_1h,
+            send_reminder_10min,
+        )
 
         start = datetime.fromisoformat(start_datetime.replace("Z", ""))
         now   = datetime.utcnow()
 
-        eta_24h = start - timedelta(hours=24)
-        eta_1h  = start - timedelta(hours=1)
+        eta_24h   = start - timedelta(hours=24)
+        eta_1h    = start - timedelta(hours=1)
+        eta_10min = start - timedelta(minutes=10)
 
         if eta_24h > now:
             send_reminder_24h.apply_async(
@@ -241,6 +246,11 @@ def _schedule_reminders(
             send_reminder_1h.apply_async(
                 args=[meeting_id, title, start_datetime, participant_emails],
                 eta=eta_1h,
+            )
+        if eta_10min > now:
+            send_reminder_10min.apply_async(
+                args=[meeting_id, title, start_datetime, participant_emails],
+                eta=eta_10min,
             )
     except Exception as e:
         print(f"[meeting_creator] Reminder scheduling failed (non-fatal): {e}")

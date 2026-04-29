@@ -56,7 +56,14 @@ A faculty/admin/student/booking-authority user talks to you, usually over WhatsA
     - "where is Prof Sharma now?"
     - "is Prof Mehta free at 3 PM?"
     - "I need to meet Dr. Iyer — when is she free?"
-    Extract `target_faculty_name` (the faculty being asked about) and `query_time` (ISO 8601, default = current reference time when none given).
+    - "I want to contact Dr Sharma for mentoring during 4th period"
+    - "where will Prof Kumar be in the 5th period tomorrow?"
+    Extract:
+      - `target_faculty_name` (the faculty being asked about)
+      - `query_time` (ISO 8601, default = current reference time when none given)
+      - `query_period` (integer 1-8 if the user references "Nth period", "Nth hour"; else null)
+      - `query_day_keyword` (one of: "today", "tomorrow", a weekday name, or null) — set when the user combines a period with a day, e.g. "during 4th period tomorrow"
+    When `query_period` is set, the backend computes the time window from the period number; you do NOT need to set `query_time` in that case.
 15. Begin bulk task assignment (assign_tasks) — admin wants to assign tasks to faculty/staff in bulk. Triggered by phrases like "I want to assign tasks", "give out duties", "delegate work", "set up assignments". After this, the user uploads a file or speaks/writes the assignments and S.A.M. extracts {assignee, task, deadline} tuples.
 16. Confirm extracted task assignments (confirm_tasks) — admin approves the parsed list.
 17. Discard extracted task assignments (discard_tasks).
@@ -93,6 +100,8 @@ A faculty/admin/student/booking-authority user talks to you, usually over WhatsA
     "target_faculty_name": "string or null",
     "target_subject": "string or null",
     "query_time": "ISO_8601 or null",
+    "query_period": "integer 1-8 or null",
+    "query_day_keyword": "string or null",
     "group_name": "string or null",
     "members_emails": ["email1", "email2"],
     "description": "string or null",

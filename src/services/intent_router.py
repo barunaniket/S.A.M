@@ -34,6 +34,47 @@ from src.services.meeting_modifier import cancel_meeting, reschedule_meeting
 logger = logging.getLogger(__name__)
 
 
+def _format_status_with_cabin(*, faculty: dict, entry: dict | None,
+                              when_label: str) -> str:
+    """
+    Compose the response for query_faculty_status. If the faculty has a
+    timetable entry overlapping `when_label`, surface the class + room.
+    Otherwise fall back to their `office_location` ("should be in her
+    cabin"), which is the most useful answer for a student trying to
+    reach them between classes.
+    """
+    name = faculty.get("full_name") or "They"
+    pronoun = "they"
+    role = (faculty.get("role") or "").upper()
+    if role in ("FACULTY", "ADMIN", "SUPER_ADMIN"):
+        # We don't track gender; "they" is the safe default. Callers who
+        # know better can override on the UI side.
+        pronoun = "they"
+
+    if entry:
+        parts = [f"{name} is in"]
+        if entry.get("subject"):
+            parts.append(f" {entry['subject']}")
+        if entry.get("room"):
+            parts.append(f" at {entry['room']}")
+        if entry.get("batch"):
+            parts.append(f" with {entry['batch']}")
+        parts.append(
+            f" ({entry['start_time']}–{entry['end_time']}) {when_label}."
+        )
+        cabin = faculty.get("office_location")
+        if cabin:
+            parts.append(f" After that, try {cabin}.")
+        return "".join(parts)
+
+    cabin = faculty.get("office_location")
+    if cabin:
+        return (f"{name} doesn't have a class {when_label} — "
+                f"{pronoun} should be in {cabin}.")
+    return (f"{name} doesn't have a class scheduled {when_label}. "
+            f"No office location on file — try email or WhatsApp.")
+
+
 def route_intent(intent_result: dict, scheduler_email: str,
                  org_id: int = None) -> dict:
     """
@@ -236,15 +277,20 @@ def route_intent(intent_result: dict, scheduler_email: str,
 
     elif intent == "query_faculty_status":
         # "Where is Prof Sharma now?" / "Is Prof Mehta free at 3?"
+        # / "I want to contact Dr Iyer for mentoring during 4th period"
         # Resolves faculty name fuzzily, looks up timetable + active meeting
         # at the requested time. Available to STUDENT, FACULTY, ADMIN.
         if org_id is None:
             return {"success": False, "error": "query_faculty_status requires org_id context."}
 
         from src.services.timetable_service import (
-            format_busy_status,
             resolve_faculty_by_name,
             who_is_busy_at,
+        )
+        from src.utils.periods import (
+            parse_day_keyword,
+            period_label,
+            period_window,
         )
 
         target = entities.get("target_faculty_name") or entities.get("title")
@@ -274,20 +320,38 @@ def route_intent(intent_result: dict, scheduler_email: str,
 
         faculty = candidates[0]
 
-        # Parse the requested time. LLM should hand us ISO; if not, default
-        # to "right now".
+        # Resolve the time window the student is asking about. Three sources
+        # in priority order:
+        #   1. query_period (+ query_day_keyword) — bell-schedule-aware
+        #   2. query_time   — explicit ISO 8601
+        #   3. neither      — "right now"
         when_dt = None
         when_label = "right now"
-        qt = entities.get("query_time")
-        if qt:
-            try:
-                when_dt = datetime.fromisoformat(qt.replace("Z", ""))
-                when_label = f"at {when_dt.strftime('%H:%M on %A')}"
-            except ValueError:
-                when_dt = None
+        period_num = entities.get("query_period")
+        day_keyword = entities.get("query_day_keyword")
+
+        if period_num:
+            target_day = parse_day_keyword(day_keyword)
+            window = period_window(int(period_num), on=target_day)
+            if window:
+                when_dt = window[0]
+                day_phrase = (day_keyword or "today").lower()
+                when_label = f"during {period_label(int(period_num))} {day_phrase}"
+        if when_dt is None:
+            qt = entities.get("query_time")
+            if qt:
+                try:
+                    when_dt = datetime.fromisoformat(qt.replace("Z", ""))
+                    when_label = f"at {when_dt.strftime('%H:%M on %A')}"
+                except ValueError:
+                    when_dt = None
 
         entry = who_is_busy_at(faculty["id"], when_dt)
-        msg = format_busy_status(faculty["full_name"], entry, at_label=when_label)
+        msg = _format_status_with_cabin(
+            faculty=faculty,
+            entry=entry,
+            when_label=when_label,
+        )
 
         # Layer in active Google Calendar meetings (best-effort).
         try:
