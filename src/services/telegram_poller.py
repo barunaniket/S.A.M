@@ -75,6 +75,7 @@ def poll_loop(initial_offset: int = 0) -> None:
 
     offset = int(initial_offset or 0)
     backoff = 1
+    conflicts_in_a_row = 0
     poll_timeout = max(1, int(Config.TELEGRAM_POLL_TIMEOUT))
     http_timeout = poll_timeout + 5
 
@@ -92,8 +93,28 @@ def poll_loop(initial_offset: int = 0) -> None:
             resp.raise_for_status()
             payload = resp.json()
             backoff = 1   # reset on success
+            conflicts_in_a_row = 0
         except httpx.ReadTimeout:
             # Long-poll closed without updates — totally normal, keep going.
+            continue
+        except httpx.HTTPStatusError as e:
+            # 409 Conflict means another long-poll/webhook is active. After
+            # repeated conflicts, force-drop any webhook (belt-and-braces) and
+            # cap backoff at 10s so recovery from a transient race is fast.
+            if e.response is not None and e.response.status_code == 409:
+                conflicts_in_a_row += 1
+                if conflicts_in_a_row >= 3:
+                    logger.warning("Persistent 409 Conflict — re-dropping webhook")
+                    _drop_pending_webhook()
+                    conflicts_in_a_row = 0
+                wait = min(backoff, 10)
+                logger.warning("getUpdates 409 conflict — backing off %ss", wait)
+                time.sleep(wait)
+                backoff = min(backoff * 2, 10)
+                continue
+            logger.warning("getUpdates failed: %s — backing off %ss", e, backoff)
+            time.sleep(min(backoff, 30))
+            backoff = min(backoff * 2, 30)
             continue
         except Exception as e:
             logger.warning("getUpdates failed: %s — backing off %ss", e, backoff)

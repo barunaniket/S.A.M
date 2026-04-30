@@ -53,8 +53,14 @@ from src.services.whatsapp_orchestrator import (
     BTN_DISCARD_TASKS,
     BTN_DISCARD_TIMETABLE,
     BTN_DISCARD_UPLOAD,
+    BTN_MEETING_CONFIRM,
+    BTN_MEETING_DISCARD,
+    BTN_MEETING_EDIT,
+    BTN_MEETING_OFFLINE,
+    BTN_MEETING_ONLINE,
     _execute_pending_upload,
     _ext_from_mime,
+    _meeting_summary_text,
     _save_media_for_user,
     _save_pending_timetable,
     _send_pending_tasks,
@@ -280,6 +286,129 @@ def _send_confirm_buttons(chat_id: int, user: Dict[str, Any], summary: str,
 
 
 # ---------------------------------------------------------------------------
+# Meeting scheduler card (Telegram mirror of whatsapp_orchestrator helpers)
+# ---------------------------------------------------------------------------
+
+def _send_meeting_mode_buttons_tg(chat_id: int, user: Dict[str, Any],
+                                  draft: Dict[str, Any]) -> None:
+    body = (f"{_meeting_summary_text(draft)}\n\n"
+            "Should this be <b>online</b> or <b>offline</b>?")
+    try:
+        result = send_buttons(
+            chat_id=chat_id,
+            body=body,
+            buttons=[
+                {"id": BTN_MEETING_ONLINE,  "title": "Online"},
+                {"id": BTN_MEETING_OFFLINE, "title": "Offline"},
+                {"id": BTN_MEETING_DISCARD, "title": "Discard"},
+            ],
+            footer="S.A.M.",
+        )
+        if not result.get("success"):
+            raise RuntimeError(result.get("error"))
+        append_history_tg(chat_id, "assistant", body, extra={"interactive": True})
+    except Exception:
+        _reply(chat_id, body + "\n\nReply <b>online</b> or <b>offline</b>.",
+               org_id=user.get("org_id"), user_id=user.get("id"))
+
+
+def _send_meeting_confirm_card_tg(chat_id: int, user: Dict[str, Any],
+                                  draft: Dict[str, Any]) -> None:
+    mode = (draft.get("mode") or "").lower()
+    extra = ""
+    if mode == "online":
+        extra = "🔗 <i>Google Meet link will be created on confirm.</i>"
+    elif mode == "offline":
+        room = draft.get("location") or "TBD"
+        extra = (f"🚪 Offline — room <b>{room}</b>.\n"
+                 "<i>I'll notify the booking authority for confirmation.</i>")
+
+    body = f"{_meeting_summary_text(draft)}\n\n{extra}\n\nLooks correct?"
+    try:
+        result = send_buttons(
+            chat_id=chat_id,
+            body=body,
+            buttons=[
+                {"id": BTN_MEETING_CONFIRM, "title": "Yes, schedule"},
+                {"id": BTN_MEETING_EDIT,    "title": "Edit"},
+                {"id": BTN_MEETING_DISCARD, "title": "Discard"},
+            ],
+            footer="S.A.M.",
+        )
+        if not result.get("success"):
+            raise RuntimeError(result.get("error"))
+        append_history_tg(chat_id, "assistant", body, extra={"interactive": True})
+    except Exception:
+        _reply(chat_id,
+               body + "\n\nReply <b>yes</b>, <b>edit</b>, or <b>discard</b>.",
+               org_id=user.get("org_id"), user_id=user.get("id"))
+
+
+def _stage_meeting_draft_tg(chat_id: int, user: Dict[str, Any],
+                            draft: Dict[str, Any]) -> None:
+    session = get_session_tg(chat_id) or {}
+    session.update({
+        "user_id": user["id"],
+        "org_id":  user["org_id"],
+        "state":   "AWAITING_MEETING_MODE",
+        "pending_meeting_draft": draft,
+    })
+    set_session_tg(chat_id, session)
+    _send_meeting_mode_buttons_tg(chat_id, user, draft)
+
+
+def _execute_pending_meeting_tg(user: Dict[str, Any], chat_id: int,
+                                session: Dict[str, Any]) -> Dict[str, Any]:
+    """Telegram twin of whatsapp_orchestrator._execute_pending_meeting."""
+    from datetime import datetime as _dt
+    from src.services.meeting_creator import create_meeting
+
+    draft = session.get("pending_meeting_draft") or {}
+    if not draft.get("start_time"):
+        return {"success": False,
+                "message": "I don't have a start time for that meeting yet."}
+
+    mode = (draft.get("mode") or "online").lower()
+    result = create_meeting(
+        title=draft.get("title") or "Meeting",
+        start_datetime=draft["start_time"],
+        end_datetime=draft.get("end_time") or draft["start_time"],
+        participant_names=draft.get("participants") or [],
+        scheduler_email=user.get("email"),
+        org_id=user.get("org_id"),
+        mode=mode,
+    )
+    if not result.get("success"):
+        return result
+
+    msg_lines = ["✅ Meeting scheduled."]
+    if result.get("meeting_id"):
+        msg_lines.append(f"Calendar event ID: <code>{result['meeting_id']}</code>")
+    if mode == "online" and result.get("meet_link"):
+        msg_lines.append(f"🔗 Meet link: {result['meet_link']}")
+    if mode == "offline" and draft.get("location"):
+        try:
+            from src.services.booking_service import request_booking
+            starts = _dt.fromisoformat(str(draft["start_time"]).replace("Z", ""))
+            ends_iso = draft.get("end_time") or draft["start_time"]
+            ends = _dt.fromisoformat(str(ends_iso).replace("Z", ""))
+            request_booking(
+                org_id=user["org_id"], requested_by=user["id"],
+                room_label=draft["location"], starts_at=starts,
+                ends_at=ends, purpose=draft.get("title"),
+                meeting_id=result.get("meeting_id"),
+                requester_name=user.get("full_name"),
+            )
+            msg_lines.append(f"🚪 Booking authority notified for <b>{draft['location']}</b>.")
+        except Exception:
+            logger.exception("request_booking failed for meeting %s", result.get("meeting_id"))
+            msg_lines.append(
+                f"⚠️ Couldn't reach the booking authority for {draft['location']}.")
+    msg_lines.append("Invites sent. I'll remind everyone 30 min before.")
+    return {"success": True, "data": result, "message": "\n".join(msg_lines)}
+
+
+# ---------------------------------------------------------------------------
 # Document / media handling
 # ---------------------------------------------------------------------------
 
@@ -352,6 +481,63 @@ def _handle_document(user: Dict[str, Any], chat_id: int,
         return
 
     saved = _save_media_for_user(user, binary, ext)
+
+    # Assignment flows skip OCR — we just store the photo path and link
+    # it to the assignment / submission.
+    session = get_session_tg(chat_id) or {}
+    state_now = session.get("state")
+    is_image = ext.lstrip(".").lower() in ("jpg", "jpeg", "png", "webp")
+
+    if state_now == "AWAITING_ASSN_BODY" and is_image:
+        from src.services import assignment_service
+        payload = session.get("assn_payload") or {}
+        result = assignment_service.create(
+            org_id=user["org_id"], faculty_id=user["id"],
+            batch=payload.get("batch"), subject=payload.get("subject"),
+            title=payload.get("title"),
+            body_file_path=str(saved),
+        )
+        clear_session_tg(chat_id)
+        _reply(chat_id, result.get("message") or "Created.",
+               org_id=user.get("org_id"), user_id=user.get("id"))
+        return
+
+    if state_now == "AWAITING_ASSN_FILE" and is_image:
+        from src.services import assignment_service
+        payload = session.get("assn_payload") or {}
+        assignment_id = payload.get("assignment_id")
+        if not assignment_id:
+            _reply(chat_id, "I lost track of which assignment that's for "
+                            "— say <i>submit assignment</i> to start over.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            clear_session_tg(chat_id)
+            return
+        caption = (message.get("caption") or "").strip() or None
+        result = assignment_service.register_submission(
+            org_id=user["org_id"], assignment_id=int(assignment_id),
+            student_id=user["id"], file_path=str(saved),
+            caption=caption,
+        )
+        if not result.get("success"):
+            _reply(chat_id, result.get("message") or "Couldn't register that.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+        # We keep state AWAITING_ASSN_FILE in case student wants to re-shoot
+        # before tapping Yes — but stash the submission id either way.
+        payload["pending_submission_id"] = result["submission"]["id"]
+        session["assn_payload"] = payload
+        set_session_tg(chat_id, session)
+        try:
+            send_buttons(chat_id=chat_id, body=result["message"],
+                         buttons=result["buttons"],
+                         footer="Confirm submission")
+            append_history_tg(chat_id, "assistant", result["message"],
+                              extra={"interactive": True})
+        except Exception:
+            _reply(chat_id, result["message"] + "\n\nReply <b>yes</b> or <b>no</b>.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+        return
+
     try:
         parsed = parse_file(str(saved))
     except Exception as e:
@@ -363,18 +549,41 @@ def _handle_document(user: Dict[str, Any], chat_id: int,
                org_id=user.get("org_id"), user_id=user.get("id"))
         return
 
-    session = get_session_tg(chat_id) or {}
-
-    if session.get("state") == "AWAITING_TIMETABLE":
+    if state_now == "AWAITING_TIMETABLE":
         _handle_timetable_upload_tg(user, chat_id, parsed, saved)
         return
-    if session.get("state") == "AWAITING_TASKS":
+    if state_now == "AWAITING_TASKS":
         _handle_tasks_upload_tg(user, chat_id, parsed, saved)
         return
 
     attendees = extract_attendees(parsed)
     meeting   = extract_meeting_metadata(parsed)
     summary   = summarize(parsed, attendees)
+
+    # Demo path 1: a clearly-detected meeting in the file → stage as a
+    # meeting draft and ask online/offline.
+    if meeting and meeting.get("found"):
+        participants = []
+        for a in attendees or []:
+            n = a.get("name") or a.get("email") or a.get("phone")
+            if n:
+                participants.append(n)
+        draft = {
+            "title":      meeting.get("title"),
+            "start_time": meeting.get("start_time"),
+            "end_time":   meeting.get("end_time"),
+            "location":   meeting.get("location"),
+            "agenda":     meeting.get("agenda"),
+            "participants": participants,
+            "mode": None,
+        }
+        _reply(chat_id,
+               f"I see you want to schedule a meeting — extracted these details:\n\n"
+               f"{_meeting_summary_text(draft)}",
+               org_id=user.get("org_id"), user_id=user.get("id"))
+        _stage_meeting_draft_tg(chat_id, user, draft)
+        return
+
     meeting_summary = summarize_meeting(meeting)
     if meeting_summary:
         summary = f"{summary}\n\nMeeting found in the file:\n{meeting_summary}"
@@ -651,6 +860,54 @@ def _handle_text(chat_id: int, text: str,
                org_id=user.get("org_id"), user_id=user.get("id"))
         return
 
+    # ---- Assignment state machine (text inputs) — runs BEFORE the LLM
+    # so a literal value like "DSA" can't be re-extracted as a new
+    # create_assignment intent from conversation history.
+    session_for_assn = get_session_tg(chat_id) or {}
+    assn_state_now = session_for_assn.get("state")
+    if assn_state_now in ("AWAITING_ASSN_SUBJECT", "AWAITING_ASSN_TITLE",
+                          "AWAITING_ASSN_BODY"):
+        from src.services import assignment_service
+        payload = session_for_assn.get("assn_payload") or {}
+
+        if text.strip().lower() in ("cancel", "stop", "discard"):
+            clear_session_tg(chat_id)
+            _reply(chat_id, "Okay, cancelled the assignment.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+
+        if assn_state_now == "AWAITING_ASSN_SUBJECT":
+            payload["subject"] = text.strip()[:120]
+            session_for_assn.update({"state": "AWAITING_ASSN_TITLE",
+                                     "assn_payload": payload})
+            set_session_tg(chat_id, session_for_assn)
+            _reply(chat_id, "What's the title of the assignment?",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+
+        if assn_state_now == "AWAITING_ASSN_TITLE":
+            payload["title"] = text.strip()[:200]
+            session_for_assn.update({"state": "AWAITING_ASSN_BODY",
+                                     "assn_payload": payload})
+            set_session_tg(chat_id, session_for_assn)
+            _reply(chat_id,
+                   "Now send the question — either <b>type it out</b> or "
+                   "<b>send a photo</b> of the question paper.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+
+        if assn_state_now == "AWAITING_ASSN_BODY":
+            result = assignment_service.create(
+                org_id=user["org_id"], faculty_id=user["id"],
+                batch=payload.get("batch"), subject=payload.get("subject"),
+                title=payload.get("title"),
+                body_text=text.strip(),
+            )
+            clear_session_tg(chat_id)
+            _reply(chat_id, result.get("message") or "Created.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+
     # ---- LLM intent path (mirrors whatsapp_orchestrator._handle_text) ----
     session = get_session_tg(chat_id) or {}
     session.update({"user_id": user["id"], "org_id": user["org_id"]})
@@ -724,6 +981,106 @@ def _handle_text(chat_id: int, text: str,
         _reply(chat_id,
                result.get("message") or ("Saved." if result.get("success") else "Couldn't save."),
                org_id=user.get("org_id"), user_id=user.get("id"))
+        return
+
+    # ---- Assignments: faculty creates ----
+    if intent == "create_assignment":
+        if user.get("role") not in ("FACULTY", "ADMIN", "SUPER_ADMIN"):
+            _reply(chat_id, "Only faculty/admin can create assignments.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+        from src.services import assignment_service
+        from src.services.timetable_service import who_is_busy_at
+
+        entities = parsed_intent.get("entities", {}) or {}
+        batch = (entities.get("target_batch") or "").strip()
+        if not batch:
+            _reply(chat_id,
+                   "Which batch is this assignment for? Try "
+                   "<i>create assignment for CSE-3A</i>.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+        canonical = assignment_service.canonical_batch(user["org_id"], batch)
+        if not canonical:
+            _reply(chat_id,
+                   f"I don't have a class group called <b>{batch}</b>. "
+                   "Check the batch code and try again.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+        batch = canonical
+
+        # Pre-fill subject from the current period if possible.
+        prefilled_subject = entities.get("target_subject")
+        if not prefilled_subject:
+            now_class = who_is_busy_at(user["id"])
+            if now_class and now_class.get("batch") == batch:
+                prefilled_subject = now_class.get("subject")
+
+        payload = {"batch": batch}
+        if prefilled_subject:
+            payload["suggested_subject"] = prefilled_subject
+
+        session.update({
+            "user_id": user["id"], "org_id": user["org_id"],
+            "state": "AWAITING_ASSN_SUBJECT",
+            "assn_payload": payload,
+        })
+        set_session_tg(chat_id, session)
+
+        prompt = (f"Creating an assignment for <b>{batch}</b>.\n\n"
+                  "What subject is this for?")
+        if prefilled_subject:
+            prompt += (f" (Reply <code>{prefilled_subject}</code> to use the "
+                       "subject you're teaching right now.)")
+        _reply(chat_id, prompt,
+               org_id=user.get("org_id"), user_id=user.get("id"))
+        return
+
+    if intent == "submit_assignment" or intent == "list_my_assignments":
+        if user.get("role") != "STUDENT":
+            _reply(chat_id, "Only students can submit assignments.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+        if not user.get("batch"):
+            # Fall back to a fresh DB read since user dict from
+            # resolve_user_by_chat_id may not include batch.
+            from src.utils.db_handler import get_user_by_email
+            full_user = get_user_by_email(user.get("email")) or {}
+            user["batch"] = full_user.get("batch")
+        if not user.get("batch"):
+            _reply(chat_id,
+                   "I don't know which batch you're in yet. Reply with your "
+                   "batch code (e.g. <code>CSE-3A</code>).",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+
+        from src.services import assignment_service
+        items = assignment_service.list_open_for_batch(user["org_id"],
+                                                       user["batch"])
+        if not items:
+            _reply(chat_id,
+                   f"No assignments are open for <b>{user['batch']}</b> "
+                   "right now.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+
+        header = ("Pick which assignment to submit:"
+                  if intent == "submit_assignment"
+                  else f"Open assignments for <b>{user['batch']}</b>:")
+        buttons = [
+            {"id": f"pick_assn_{a['id']}",
+             "title": f"{a['subject']} — {a['title']}"[:64]}
+            for a in items[:10]
+        ]
+        try:
+            send_buttons(chat_id=chat_id, body=header,
+                         buttons=buttons, footer="Tap one")
+            append_history_tg(chat_id, "assistant", header,
+                              extra={"interactive": True})
+        except Exception:
+            _reply(chat_id, header + "\n" + "\n".join(
+                f"• {a['subject']} — {a['title']}" for a in items[:10]),
+                   org_id=user.get("org_id"), user_id=user.get("id"))
         return
 
     # ---- Bulk task assignment (M4) ----
@@ -836,6 +1193,60 @@ def _handle_text(chat_id: int, text: str,
                org_id=user.get("org_id"), user_id=user.get("id"))
         return
 
+    # ----- Meeting scheduler card (Path 2 / NL + bare intent / edit reply) -----
+    if intent == "create_meeting":
+        ents = parsed_intent.get("entities", {}) or {}
+        if session.get("state") == "AWAITING_MEETING_EDIT":
+            draft = session.get("pending_meeting_draft") or {}
+            for k in ("title", "start_time", "end_time", "location", "agenda"):
+                if ents.get(k):
+                    draft[k] = ents[k]
+            if ents.get("participants"):
+                draft["participants"] = ents["participants"]
+            if ents.get("mode"):
+                draft["mode"] = ents["mode"]
+            session["pending_meeting_draft"] = draft
+            session["state"] = "AWAITING_MEETING_CONFIRM" if draft.get("mode") \
+                               else "AWAITING_MEETING_MODE"
+            set_session_tg(chat_id, session)
+            if draft.get("mode"):
+                _send_meeting_confirm_card_tg(chat_id, user, draft)
+            else:
+                _send_meeting_mode_buttons_tg(chat_id, user, draft)
+            return
+
+        has_anything = any(ents.get(k) for k in
+                           ("title", "start_time", "end_time", "location",
+                            "agenda", "participants"))
+        if not has_anything:
+            session["state"] = "AWAITING_MEETING_INPUT"
+            set_session_tg(chat_id, session)
+            _reply(chat_id,
+                   "Sure — send me a <b>photo</b> of the circular, or just <b>tell me</b> "
+                   "the details (date, time, location, attendees, agenda).",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+
+        draft = {
+            "title":      ents.get("title"),
+            "start_time": ents.get("start_time"),
+            "end_time":   ents.get("end_time"),
+            "location":   ents.get("location"),
+            "agenda":     ents.get("agenda"),
+            "participants": ents.get("participants") or [],
+            "mode":       ents.get("mode"),
+        }
+        if draft.get("mode") in ("online", "offline"):
+            session.update({
+                "state": "AWAITING_MEETING_CONFIRM",
+                "pending_meeting_draft": draft,
+            })
+            set_session_tg(chat_id, session)
+            _send_meeting_confirm_card_tg(chat_id, user, draft)
+            return
+        _stage_meeting_draft_tg(chat_id, user, draft)
+        return
+
     # Standard intent router for everything else.
     result = route_intent(
         parsed_intent,
@@ -863,14 +1274,13 @@ def _handle_callback(callback: Dict[str, Any]) -> None:
     chat   = msg.get("chat") or {}
     chat_id = chat.get("id")
 
-    # Acknowledge the tap immediately so Telegram dismisses the spinner.
-    answer_callback(cb_id)
-
     if not chat_id:
+        answer_callback(cb_id)
         return
 
     user = resolve_user_by_chat_id(chat_id)
     if not user:
+        answer_callback(cb_id)
         send_text(chat_id, _onboarding_message())
         return
 
@@ -879,6 +1289,42 @@ def _handle_callback(callback: Dict[str, Any]) -> None:
                 metadata={"callback_id": cb_id}, channel="telegram")
 
     session = get_session_tg(chat_id) or {}
+
+    # ----- Toast-emitting branches FIRST: each must call answer_callback
+    # with its toast text before any other ack fires (Telegram only honors
+    # the first answerCallbackQuery per tap).
+    if data and data.startswith("poll_"):
+        from src.services.attendance_poll import record_tap
+        try:
+            session_id = int(data.split("_", 1)[1])
+        except (ValueError, IndexError):
+            answer_callback(cb_id, "Bad button payload.")
+            return
+        result = record_tap(session_id, user["id"])
+        toast = result.get("message") or ("Locked in ✓" if result.get("success")
+                                          else "Couldn't record that.")
+        answer_callback(cb_id, toast)
+        return
+
+    if data and data.startswith("mcq_"):
+        from src.services.attendance_mcq import record_answer
+        try:
+            _, sid_s, qi_s, ch_s = data.split("_", 3)
+            session_id = int(sid_s)
+            q_index    = int(qi_s)
+            choice     = int(ch_s)
+        except (ValueError, AttributeError):
+            answer_callback(cb_id, "Bad button payload.")
+            return
+        result = record_answer(session_id, user["id"], q_index, choice)
+        toast = result.get("message") or ("Locked in ✓" if result.get("success")
+                                          else "Couldn't record that.")
+        answer_callback(cb_id, toast)
+        return
+
+    # All other branches: ack now (no text) so the spinner dismisses,
+    # then handle the action.
+    answer_callback(cb_id)
 
     if data == BTN_DISCARD_UPLOAD:
         _discard_pending_tg(user, chat_id, session)
@@ -921,6 +1367,109 @@ def _handle_callback(callback: Dict[str, Any]) -> None:
         _discard_pending_tg(user, chat_id, session)
         clear_session_tg(chat_id)
         _reply(chat_id, "Okay, I've discarded those tasks.",
+               org_id=user.get("org_id"), user_id=user.get("id"))
+        return
+
+    # ----- Meeting scheduler card -----
+    if data in (BTN_MEETING_ONLINE, BTN_MEETING_OFFLINE,
+                BTN_MEETING_CONFIRM, BTN_MEETING_EDIT, BTN_MEETING_DISCARD):
+        try:
+            if data in (BTN_MEETING_ONLINE, BTN_MEETING_OFFLINE):
+                draft = session.get("pending_meeting_draft") or {}
+                if not draft:
+                    _reply(chat_id,
+                           "That card has expired — say <b>schedule meeting</b> "
+                           "to start again.",
+                           org_id=user.get("org_id"), user_id=user.get("id"))
+                    return
+                draft["mode"] = "online" if data == BTN_MEETING_ONLINE else "offline"
+                session["pending_meeting_draft"] = draft
+                session["state"] = "AWAITING_MEETING_CONFIRM"
+                set_session_tg(chat_id, session)
+                _send_meeting_confirm_card_tg(chat_id, user, draft)
+                return
+
+            if data == BTN_MEETING_CONFIRM:
+                result = _execute_pending_meeting_tg(user, chat_id, session)
+                clear_session_tg(chat_id)
+                _reply(chat_id,
+                       result.get("message") or
+                       ("Scheduled." if result.get("success")
+                        else f"Couldn't schedule: {result.get('error') or 'unknown error'}"),
+                       org_id=user.get("org_id"), user_id=user.get("id"))
+                return
+
+            if data == BTN_MEETING_EDIT:
+                session["state"] = "AWAITING_MEETING_EDIT"
+                set_session_tg(chat_id, session)
+                _reply(chat_id,
+                       "What should I change? Reply with the field — e.g. "
+                       "<b>time 4pm</b>, <b>room 305</b>, <b>make it online</b>.",
+                       org_id=user.get("org_id"), user_id=user.get("id"))
+                return
+
+            if data == BTN_MEETING_DISCARD:
+                clear_session_tg(chat_id)
+                _reply(chat_id, "Okay, dropped that meeting.",
+                       org_id=user.get("org_id"), user_id=user.get("id"))
+                return
+        except Exception as e:
+            logger.exception("Meeting card button %s failed", data)
+            _reply(chat_id,
+                   f"⚠️ Something went wrong handling that button: {e}. "
+                   "Try saying <b>schedule meeting</b> again.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+
+    # ----- Assignment: student picks one to submit (pick_assn_<id>) -----
+    if data and data.startswith("pick_assn_"):
+        from src.services import assignment_service
+        try:
+            assignment_id = int(data[len("pick_assn_"):])
+        except ValueError:
+            _reply(chat_id, "Bad button payload.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+        a = assignment_service.get_assignment(assignment_id)
+        if not a or a["status"] != "OPEN":
+            _reply(chat_id, "That assignment is no longer open.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+        if user.get("role") != "STUDENT":
+            _reply(chat_id, "Only students can submit assignments.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+        session.update({
+            "user_id": user["id"], "org_id": user["org_id"],
+            "state": "AWAITING_ASSN_FILE",
+            "assn_payload": {"assignment_id": assignment_id},
+        })
+        set_session_tg(chat_id, session)
+        _reply(chat_id,
+               f"Send a photo of your work for <b>{a['subject']} — "
+               f"{a['title']}</b>.",
+               org_id=user.get("org_id"), user_id=user.get("id"))
+        return
+
+    # ----- Assignment confirmation (submit_yes_<id> / submit_no_<id>) -----
+    if data and (data.startswith("submit_yes_") or data.startswith("submit_no_")):
+        from src.services import assignment_service
+        is_yes = data.startswith("submit_yes_")
+        try:
+            submission_id = int(data.split("_")[-1])
+        except ValueError:
+            _reply(chat_id, "Bad button payload.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+        if is_yes:
+            result = assignment_service.confirm_submission(
+                submission_id, by_user_id=user["id"])
+        else:
+            result = assignment_service.discard_submission(
+                submission_id, by_user_id=user["id"])
+        clear_session_tg(chat_id)
+        _reply(chat_id, result.get("message") or
+               ("Done." if result.get("success") else "Couldn't process that."),
                org_id=user.get("org_id"), user_id=user.get("id"))
         return
 
@@ -1027,10 +1576,17 @@ def handle_update(update: Dict[str, Any]) -> None:
 
     has_media = any(k in msg for k in ("document", "photo", "voice", "audio", "video"))
     if has_media:
-        if role not in ("ADMIN", "FACULTY", "SUPER_ADMIN"):
+        # Students may upload only when actively submitting an assignment.
+        student_submitting = (
+            role == "STUDENT"
+            and (get_session_tg(chat_id) or {}).get("state") == "AWAITING_ASSN_FILE"
+            and "photo" in msg
+        )
+        if role not in ("ADMIN", "FACULTY", "SUPER_ADMIN") and not student_submitting:
             _reply(chat_id,
-                   "Sorry — only faculty/admin can upload files or voice notes. "
-                   "You can still ask me questions in text.",
+                   "Sorry — only faculty/admin can upload files. "
+                   "Students can submit assignment photos by saying "
+                   "<i>submit assignment</i> first.",
                    org_id=user.get("org_id"), user_id=user.get("id"))
             return
         try:

@@ -94,16 +94,34 @@ def route_intent(intent_result: dict, scheduler_email: str,
     # ------------------------------------------------------------------
     if intent == "create_meeting":
         title = entities.get("title") or "Untitled Meeting"
-        if not entities.get("start_time") or not entities.get("end_time"):
+        start = entities.get("start_time")
+        end   = entities.get("end_time")
+
+        if not start:
             return {
                 "success":             False,
                 "needs_clarification": True,
-                "message":             "Please specify the meeting start and end time.",
+                "message":             "What time should the meeting start?",
             }
+
+        # Default a missing end_time to start + 1h. People rarely say "3pm to
+        # 4pm" out loud — "meet at 3pm" means a one-hour slot in practice.
+        if not end:
+            try:
+                from datetime import timedelta as _td
+                end_dt = datetime.fromisoformat(start.replace("Z", "")) + _td(hours=1)
+                end = end_dt.isoformat()
+            except ValueError:
+                return {
+                    "success":             False,
+                    "needs_clarification": True,
+                    "message":             "I couldn't parse the start time. Try '3pm' or '15:00'.",
+                }
+
         return create_meeting(
             title=title,
-            start_datetime=entities["start_time"],
-            end_datetime=entities["end_time"],
+            start_datetime=start,
+            end_datetime=end,
             participant_names=entities.get("participants", []),
             scheduler_email=scheduler_email,
             org_id=org_id,
@@ -233,7 +251,9 @@ def route_intent(intent_result: dict, scheduler_email: str,
     elif intent in ("confirm_upload", "discard_upload",
                     "onboard_timetable",
                     "confirm_timetable", "discard_timetable",
-                    "assign_tasks", "confirm_tasks", "discard_tasks"):
+                    "assign_tasks", "confirm_tasks", "discard_tasks",
+                    "create_assignment", "submit_assignment",
+                    "list_my_assignments"):
         # (cancel_class is handled below — it can be answered by REST too,
         # because cancellation_service has all the context it needs.)
         # These are stateful flows handled by the WhatsApp orchestrator,
@@ -378,6 +398,233 @@ def route_intent(intent_result: dict, scheduler_email: str,
 
         return {"success": True, "data": {"faculty": faculty, "entry": entry},
                 "message": msg}
+
+    # ------------------------------------------------------------------
+    elif intent == "start_mcq_attendance":
+        # Faculty wants to take attendance via a 5-question MCQ quiz.
+        if org_id is None or not scheduler_email:
+            return {"success": False,
+                    "error": "start_mcq_attendance requires the faculty session."}
+
+        from src.services.attendance_mcq import start_session
+        from src.services.timetable_service import who_is_busy_at
+        from src.utils.db_handler import get_user_by_email
+
+        faculty = get_user_by_email(scheduler_email)
+        if not faculty:
+            return {"success": False,
+                    "message": "I couldn't resolve your faculty account."}
+        if faculty.get("role") not in ("FACULTY", "ADMIN", "SUPER_ADMIN"):
+            return {"success": False,
+                    "message": "Only faculty/admin can start MCQ attendance."}
+
+        subject = entities.get("target_subject") or entities.get("title")
+        batch   = entities.get("target_batch")
+
+        # Infer subject + batch from the faculty's current period if missing.
+        if not subject or not batch:
+            now_class = who_is_busy_at(faculty["id"])
+            if now_class:
+                subject = subject or now_class.get("subject")
+                batch   = batch   or now_class.get("batch")
+
+        if not subject:
+            return {"success": False, "needs_clarification": True,
+                    "message": "Which subject is this attendance for? "
+                               "(e.g. 'start mcq attendance for DSA')"}
+        if not batch:
+            return {"success": False, "needs_clarification": True,
+                    "message": "Which batch is this for? "
+                               "(e.g. 'start mcq attendance for DSA in CSE-3A')"}
+
+        result = start_session(faculty=faculty, batch=batch, subject=subject)
+        return result
+
+    # ------------------------------------------------------------------
+    elif intent == "start_poll_attendance":
+        # Faculty wants the simple "I'm here" tap flow.
+        if org_id is None or not scheduler_email:
+            return {"success": False,
+                    "error": "start_poll_attendance requires the faculty session."}
+
+        from src.services.attendance_poll import start_session
+        from src.services.timetable_service import who_is_busy_at
+        from src.utils.db_handler import get_user_by_email
+
+        faculty = get_user_by_email(scheduler_email)
+        if not faculty:
+            return {"success": False,
+                    "message": "I couldn't resolve your faculty account."}
+        if faculty.get("role") not in ("FACULTY", "ADMIN", "SUPER_ADMIN"):
+            return {"success": False,
+                    "message": "Only faculty/admin can start poll attendance."}
+
+        subject = entities.get("target_subject") or entities.get("title")
+        batch   = entities.get("target_batch")
+
+        if not subject or not batch:
+            now_class = who_is_busy_at(faculty["id"])
+            if now_class:
+                subject = subject or now_class.get("subject")
+                batch   = batch   or now_class.get("batch")
+
+        if not subject or not batch:
+            return {"success": False, "needs_clarification": True,
+                    "message": "Which subject and batch is this attendance "
+                               "for? (e.g. 'start poll attendance for DSA "
+                               "in CSE-3A')"}
+
+        return start_session(faculty=faculty, batch=batch, subject=subject)
+
+    # ------------------------------------------------------------------
+    elif intent == "close_poll":
+        # Faculty wants to close the most recent open poll session.
+        if not scheduler_email:
+            return {"success": False,
+                    "error": "close_poll requires the faculty session."}
+
+        from src.services.attendance_poll import (
+            close_session,
+            latest_open_for_faculty,
+        )
+        from src.utils.db_handler import get_user_by_email
+
+        faculty = get_user_by_email(scheduler_email)
+        if not faculty:
+            return {"success": False,
+                    "message": "I couldn't resolve your faculty account."}
+
+        open_session = latest_open_for_faculty(faculty["id"])
+        if not open_session:
+            return {"success": False,
+                    "message": "I couldn't find an open poll of yours to close."}
+
+        result = close_session(open_session["id"])
+        if result.get("success"):
+            result.setdefault("message",
+                              f"📊 Closed Quick Poll for "
+                              f"{open_session['subject']}.")
+        return result
+
+    # ------------------------------------------------------------------
+    elif intent == "override_attendance":
+        # "mark Arjun present" / "mark Riya absent" — applies to the
+        # faculty's most recent MCQ or Poll session.
+        from datetime import date as _date
+
+        from src.services.attendance_common import (
+            latest_open_session_for_faculty,
+            override_attendance,
+        )
+        from src.utils.db_handler import get_user_by_email
+
+        faculty = get_user_by_email(scheduler_email) if scheduler_email else None
+        if not faculty:
+            return {"success": False,
+                    "message": "I couldn't resolve your faculty account."}
+
+        student = entities.get("target_faculty_name") or entities.get("title")
+        if not student and entities.get("participants"):
+            student = entities["participants"][0]
+        status = (entities.get("target_status") or "").lower()
+        if not student or status not in ("present", "absent"):
+            return {"success": False, "needs_clarification": True,
+                    "message": "Tell me who and which way — e.g. "
+                               "<code>mark Arjun present</code>."}
+
+        session = latest_open_session_for_faculty(faculty["id"])
+        if not session:
+            return {"success": False,
+                    "message": "I couldn't find a recent attendance session "
+                               "of yours to override."}
+
+        return override_attendance(
+            org_id=session["org_id"],
+            faculty_id=session["faculty_id"],
+            subject=session["subject"],
+            batch=session["batch"],
+            class_date=_date.today(),
+            student_query=student,
+            status=status,
+            marked_by=faculty["id"],
+            source=session.get("kind") or "manual",
+            session_id=session["id"],
+        )
+
+    # ------------------------------------------------------------------
+    elif intent == "query_my_next_class":
+        # "what's my next class" — student-facing.
+        if org_id is None or not scheduler_email:
+            return {"success": False,
+                    "error": "query_my_next_class requires the user session."}
+
+        from src.services.timetable_service import next_class_for_batch
+        from src.utils.db_handler import get_db_connection, release_db_connection
+
+        # We need batch + full user row including batch and any extra.
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id, role, batch FROM users WHERE email = %s LIMIT 1;",
+                (scheduler_email,),
+            )
+            row = cur.fetchone()
+            cur.close()
+        finally:
+            release_db_connection(conn)
+
+        if not row:
+            return {"success": False,
+                    "message": "I couldn't find your account."}
+        user_row = dict(row)
+        batch = (user_row.get("batch") or "").strip()
+        if not batch:
+            return {"success": False, "needs_clarification": True,
+                    "message": "I don't know which batch you're in yet. "
+                               "Reply with your batch code (e.g. "
+                               "<code>CSE-3A</code>) and I'll save it."}
+
+        entry = next_class_for_batch(org_id, batch)
+        if not entry:
+            return {"success": True,
+                    "message": (f"I couldn't find any classes for "
+                                f"<b>{batch}</b> in the timetable. "
+                                "Ask your faculty to upload one.")}
+
+        subject  = entry.get("subject") or "your class"
+        room     = entry.get("room")
+        faculty  = entry.get("faculty_name") or "your professor"
+        start_dt = entry["start_dt"]
+        end_dt   = entry["end_dt"]
+
+        if entry.get("in_session"):
+            tail = f" until {end_dt.strftime('%H:%M')} — with {faculty}"
+            where = f" in {room}" if room else ""
+            msg = (f"You're in <b>{subject}</b>{where} right now"
+                   f"{tail}.")
+            return {"success": True, "data": entry, "message": msg}
+
+        now = datetime.now()
+        delta_min = int((start_dt - now).total_seconds() // 60)
+        when_phrase = ""
+        if start_dt.date() == now.date():
+            if delta_min <= 0:
+                when_phrase = f"at {start_dt.strftime('%H:%M')}"
+            elif delta_min < 90:
+                when_phrase = f"in {delta_min} minute{'s' if delta_min != 1 else ''}"
+            else:
+                when_phrase = f"at {start_dt.strftime('%H:%M')}"
+        elif (start_dt.date() - now.date()).days == 1:
+            when_phrase = f"tomorrow at {start_dt.strftime('%H:%M')}"
+        else:
+            when_phrase = (f"on {start_dt.strftime('%A')} at "
+                           f"{start_dt.strftime('%H:%M')}")
+
+        where = f" in {room}" if room else ""
+        msg = (f"Your next class is <b>{subject}</b>{where} {when_phrase} "
+               f"— with {faculty}.")
+        return {"success": True, "data": entry, "message": msg}
 
     # ------------------------------------------------------------------
     elif intent == "clarification_needed":

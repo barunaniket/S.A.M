@@ -222,6 +222,225 @@ def next_free_slot(user_id: int, *,
     return None
 
 
+def next_class_for_batch(org_id: int, batch: str,
+                         when: Optional[datetime] = None,
+                         tz: str = "Asia/Kolkata"
+                         ) -> Optional[Dict[str, Any]]:
+    """
+    Return the timetable entry the batch is currently in, OR the next one
+    coming up — whichever applies. Joins faculty so the caller has
+    faculty_name for "with Dr Sharma" formatting.
+
+    Returns None if the batch has nothing scheduled today AND tomorrow.
+
+    Output dict:
+        {in_session: bool, day_of_week, start_time, end_time, subject, room,
+         batch, faculty_id, faculty_name, faculty_email, start_dt, end_dt}
+    """
+    moment = _resolve_when(when, tz)
+    today = moment.weekday()
+    t = moment.time()
+
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        # 1. Currently in session?
+        cur.execute(
+            """
+            SELECT te.day_of_week, te.start_time, te.end_time,
+                   te.subject, te.room, te.batch,
+                   u.id AS faculty_id, u.full_name AS faculty_name,
+                   u.email AS faculty_email
+              FROM timetable_entries te
+              JOIN users u ON u.id = te.user_id
+             WHERE te.org_id = %s
+               AND te.batch = %s
+               AND te.day_of_week = %s
+               AND te.start_time <= %s
+               AND te.end_time   >  %s
+             ORDER BY te.start_time
+             LIMIT 1;
+            """,
+            (org_id, batch, today, t, t),
+        )
+        row = cur.fetchone()
+        if row:
+            d = dict(row)
+            d["in_session"] = True
+            d["start_dt"] = datetime.combine(moment.date(), d["start_time"])
+            d["end_dt"]   = datetime.combine(moment.date(), d["end_time"])
+            cur.close()
+            return d
+
+        # 2. Upcoming today?
+        cur.execute(
+            """
+            SELECT te.day_of_week, te.start_time, te.end_time,
+                   te.subject, te.room, te.batch,
+                   u.id AS faculty_id, u.full_name AS faculty_name,
+                   u.email AS faculty_email
+              FROM timetable_entries te
+              JOIN users u ON u.id = te.user_id
+             WHERE te.org_id = %s
+               AND te.batch = %s
+               AND te.day_of_week = %s
+               AND te.start_time > %s
+             ORDER BY te.start_time
+             LIMIT 1;
+            """,
+            (org_id, batch, today, t),
+        )
+        row = cur.fetchone()
+        if row:
+            d = dict(row)
+            d["in_session"] = False
+            d["start_dt"] = datetime.combine(moment.date(), d["start_time"])
+            d["end_dt"]   = datetime.combine(moment.date(), d["end_time"])
+            cur.close()
+            return d
+
+        # 3. Walk forward through the week — pick the next day with an entry.
+        for offset in range(1, 8):
+            target_day = (today + offset) % 7
+            cur.execute(
+                """
+                SELECT te.day_of_week, te.start_time, te.end_time,
+                       te.subject, te.room, te.batch,
+                       u.id AS faculty_id, u.full_name AS faculty_name,
+                       u.email AS faculty_email
+                  FROM timetable_entries te
+                  JOIN users u ON u.id = te.user_id
+                 WHERE te.org_id = %s
+                   AND te.batch = %s
+                   AND te.day_of_week = %s
+                 ORDER BY te.start_time
+                 LIMIT 1;
+                """,
+                (org_id, batch, target_day),
+            )
+            row = cur.fetchone()
+            if row:
+                d = dict(row)
+                d["in_session"] = False
+                target_date = moment.date() + timedelta(days=offset)
+                d["start_dt"] = datetime.combine(target_date, d["start_time"])
+                d["end_dt"]   = datetime.combine(target_date, d["end_time"])
+                cur.close()
+                return d
+        cur.close()
+        return None
+    finally:
+        release_db_connection(conn)
+
+
+def get_subject_for_batch_at(org_id: int, batch: str,
+                             when: Optional[datetime] = None,
+                             trailing_grace_minutes: int = 90,
+                             tz: str = "Asia/Kolkata"
+                             ) -> Optional[Dict[str, Any]]:
+    """
+    Return the timetable_entry currently active for `batch`, OR the most
+    recently ended one within the last `trailing_grace_minutes`.
+
+    Used by the "I'm submitting just after class" path — submissions arrive
+    a few minutes after the bell, so a strictly-now lookup misses the case
+    we care about most.
+    """
+    moment = _resolve_when(when, tz)
+    today = moment.weekday()
+    t = moment.time()
+
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT te.day_of_week, te.start_time, te.end_time,
+                   te.subject, te.room, te.batch,
+                   u.id AS faculty_id, u.full_name AS faculty_name,
+                   u.email AS faculty_email
+              FROM timetable_entries te
+              JOIN users u ON u.id = te.user_id
+             WHERE te.org_id = %s
+               AND te.batch = %s
+               AND te.day_of_week = %s
+               AND te.start_time <= %s
+               AND te.end_time   >  %s
+             ORDER BY te.start_time
+             LIMIT 1;
+            """,
+            (org_id, batch, today, t, t),
+        )
+        row = cur.fetchone()
+        if row:
+            cur.close()
+            d = dict(row)
+            d["in_session"] = True
+            return d
+
+        # Trailing grace: most recent entry that ended within the window.
+        grace_cutoff = (moment - timedelta(minutes=trailing_grace_minutes)).time()
+        cur.execute(
+            """
+            SELECT te.day_of_week, te.start_time, te.end_time,
+                   te.subject, te.room, te.batch,
+                   u.id AS faculty_id, u.full_name AS faculty_name,
+                   u.email AS faculty_email
+              FROM timetable_entries te
+              JOIN users u ON u.id = te.user_id
+             WHERE te.org_id = %s
+               AND te.batch = %s
+               AND te.day_of_week = %s
+               AND te.end_time <= %s
+               AND te.end_time >= %s
+             ORDER BY te.end_time DESC
+             LIMIT 1;
+            """,
+            (org_id, batch, today, t, grace_cutoff),
+        )
+        row = cur.fetchone()
+        cur.close()
+        if not row:
+            return None
+        d = dict(row)
+        d["in_session"] = False
+        return d
+    finally:
+        release_db_connection(conn)
+
+
+def todays_subjects_for_batch(org_id: int, batch: str,
+                              when: Optional[datetime] = None,
+                              tz: str = "Asia/Kolkata"
+                              ) -> List[Dict[str, Any]]:
+    """All entries for this batch on `when`'s weekday, ordered by start_time."""
+    moment = _resolve_when(when, tz)
+    today = moment.weekday()
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT te.day_of_week, te.start_time, te.end_time,
+                   te.subject, te.room, te.batch,
+                   u.id AS faculty_id, u.full_name AS faculty_name,
+                   u.email AS faculty_email
+              FROM timetable_entries te
+              JOIN users u ON u.id = te.user_id
+             WHERE te.org_id = %s
+               AND te.batch = %s
+               AND te.day_of_week = %s
+             ORDER BY te.start_time;
+            """,
+            (org_id, batch, today),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.close()
+        return rows
+    finally:
+        release_db_connection(conn)
+
+
 def todays_classes(user_id: int, tz: str = "Asia/Kolkata") -> List[Dict[str, Any]]:
     moment = datetime.now(pytz.timezone(tz)).replace(tzinfo=None)
     day = moment.weekday()
@@ -248,8 +467,23 @@ def todays_classes(user_id: int, tz: str = "Asia/Kolkata") -> List[Dict[str, Any
 # Faculty resolution by name (fuzzy)
 # ---------------------------------------------------------------------------
 
+def _normalize_for_match(s: str) -> str:
+    """
+    Expand common honorific variants so the fuzzy matcher doesn't get
+    tripped up by 'professor' vs 'prof', 'doctor' vs 'dr', etc.
+    """
+    import re
+    s = (s or "").strip().lower()
+    s = re.sub(r"\bprofessor\b", "prof", s)
+    s = re.sub(r"\bdoctor\b",    "dr",   s)
+    s = re.sub(r"\bma'?am\b",    "",     s)   # "Sharma ma'am" → "Sharma"
+    s = re.sub(r"\bsir\b",       "",     s)
+    s = re.sub(r"\s+",           " ",    s)   # collapse extra spaces
+    return s.strip()
+
+
 def resolve_faculty_by_name(org_id: int, query: str,
-                            min_score: int = 80) -> List[Dict[str, Any]]:
+                            min_score: int = 65) -> List[Dict[str, Any]]:
     """
     Fuzzy-match a free-form name against the org's faculty roster. Returns a
     list of candidate {id, full_name, email, role, department, score} dicts
@@ -278,15 +512,19 @@ def resolve_faculty_by_name(org_id: int, query: str,
     finally:
         release_db_connection(conn)
 
-    q = query.strip()
+    q_norm = _normalize_for_match(query)
+    if not q_norm:
+        return []
+
     out = []
     for r in rows:
         name = r.get("full_name") or ""
         if not name:
             continue
+        name_norm = _normalize_for_match(name)
         score = max(
-            fuzz.token_set_ratio(q, name),
-            fuzz.partial_ratio(q.lower(), name.lower()),
+            fuzz.token_set_ratio(q_norm, name_norm),
+            fuzz.partial_ratio(q_norm, name_norm),
         )
         if score >= min_score:
             out.append({**r, "score": int(score)})

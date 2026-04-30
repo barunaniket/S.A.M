@@ -1,0 +1,24 @@
+faculty_email,day_of_week,start_time,end_time,subject,room,batch
+priya.sharma@example.edu,0,09:00,09:50,DSA,Room 204,CSE-3A
+priya.sharma@example.edu,0,11:00,11:50,Algorithms,Room 204,CSE-3A
+priya.sharma@example.edu,0,12:00,12:50,DSA,Room 205,CSE-3B
+priya.sharma@example.edu,1,10:00,10:50,DSA,Room 204,CSE-3B
+priya.sharma@example.edu,1,14:00,14:50,Algorithms,Room 204,CSE-3A
+priya.sharma@example.edu,2,09:00,09:50,DSA,Room 204,CSE-3A
+priya.sharma@example.edu,2,15:00,15:50,Office hours,Faculty Block 312,
+rahul.kumar@example.edu,0,10:00,10:50,Compilers,Room 207,CSE-4A
+rahul.kumar@example.edu,0,14:00,14:50,Compilers,Room 207,CSE-4B
+rahul.kumar@example.edu,1,11:00,11:50,Compilers,Room 207,CSE-4A
+rahul.kumar@example.edu,1,12:00,12:50,Compilers,Room 207,CSE-4A
+rahul.kumar@example.edu,2,10:00,10:50,Compilers,Room 207,CSE-4B
+rahul.kumar@example.edu,2,15:00,15:50,Compilers,Room 207,CSE-4A
+anjali.deshmukh@example.edu,0,12:00,12:50,Algorithms,Room 206,CSE-3B
+anjali.deshmukh@example.edu,1,09:00,09:50,Algorithms,Room 206,CSE-3A
+anjali.deshmukh@example.edu,2,11:00,11:50,Algorithms,Room 206,CSE-3B
+suresh.iyengar@example.edu,0,15:00,15:50,DSA,Room 208,CSE-4B
+suresh.iyengar@example.edu,1,15:00,15:50,DSA,Room 208,CSE-4A
+suresh.iyengar@example.edu,2,12:00,12:50,DSA,Room 208,CSE-4B
+lakshmi.narayan@example.edu,0,16:00,16:50,Compilers,Room 209,CSE-3A
+lakshmi.narayan@example.edu,1,16:00,16:50,Compilers,Room 209,CSE-3B
+barunaniket@gmail.com,0,17:00,17:50,Algorithms,Room 210,CSE-4A
+barunaniket@gmail.com,1,17:00,17:50,Algorithms,Room 210,CSE-4B

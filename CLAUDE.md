@@ -66,8 +66,15 @@ python scripts/migrate_v7_tasks.py
 python scripts/migrate_v8_booking_briefing.py
 python scripts/migrate_v9_telegram.py
 python scripts/migrate_v10_demo.py
-python scripts/seed_demo.py                         # demo cast (use instead of seed_db.py for the prototype)
+python scripts/migrate_v11_mcq.py
+python scripts/migrate_v12_mvp.py
+python scripts/seed_demo.py                         # minimal demo cast (SPOC + Priya/Rahul + Arjun/Riya)
+python scripts/load_rosters.py --timetables        # full synthetic rosters from data/*.csv
 ```
+
+`load_rosters.py` reads `data/students.csv` + `data/faculty.csv` (+ `data/timetable.csv`
+when `--timetables` is passed). It UPSERTs users, refreshes class user_groups for every
+distinct batch, and is idempotent — re-running after a CSV edit just applies the diff.
 After v4+: re-login so the JWT picks up the new `role` claim.
 
 ### Chat-first onboarding (Telegram, v10)
@@ -83,6 +90,31 @@ the pre-seeded roster (institutional Gmail = verification), binds
 land in `AWAITING_TIMETABLE`; students without a batch land in
 `AWAITING_BATCH`. The web-first `/start CODE` pairing path is still wired in
 parallel for users who came in via the web first.
+
+### MCQ-based attendance (v11)
+
+Faculty triggers a quiz at the end of class via `start mcq attendance for <subject>`.
+`src/services/attendance_mcq.py` handles the lifecycle:
+
+1. `start_session` inserts an `mcq_sessions` row (questions persisted as JSONB)
+   and schedules N Celery `dispatch_mcq_question` tasks at +0s, +15s, +30s, …
+   plus one `close_mcq_session` task at the end of the window.
+2. Each dispatch fans out an inline-keyboard message to every paired student
+   in `users` whose `batch` matches the session.
+3. Student taps trigger `mcq_<sid>_<q>_<c>` callback queries handled in
+   `telegram_orchestrator._handle_callback` → `record_answer` writes to
+   `mcq_responses` (UNIQUE on session/user/q so retaps are no-ops).
+4. `close_session` reads every response, scores each student against
+   `questions[*].correct`, ignores responses that landed after the question's
+   window, and writes one row per student to `attendance_records`
+   (PRESENT if score ≥ threshold, default 4/5).
+5. Faculty gets a Telegram DM with the full breakdown plus a hint —
+   replying `mark <name> present|absent` triggers `override_attendance`
+   which flips the record (and stamps `overridden=TRUE`).
+
+Question source for the demo is hardcoded in `attendance_mcq.QUESTION_BANK`
+(DSA, Compilers, Algorithms — 5 questions each). Replace with an
+`mcq_question_bank` table for production.
 
 ### Period-aware faculty lookup (v10)
 

@@ -49,6 +49,12 @@ BTN_CONFIRM_TIMETABLE = "sam_confirm_timetable"
 BTN_DISCARD_TIMETABLE = "sam_discard_timetable"
 BTN_CONFIRM_TASKS     = "sam_confirm_tasks"
 BTN_DISCARD_TASKS     = "sam_discard_tasks"
+# Meeting scheduler card (Path 1 + Path 2 share these)
+BTN_MEETING_ONLINE    = "sam_meeting_online"
+BTN_MEETING_OFFLINE   = "sam_meeting_offline"
+BTN_MEETING_CONFIRM   = "sam_meeting_confirm"
+BTN_MEETING_EDIT      = "sam_meeting_edit"
+BTN_MEETING_DISCARD   = "sam_meeting_discard"
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +257,32 @@ def _handle_document(user: Dict[str, Any], phone: str, msg: Dict[str, Any]) -> N
     attendees = extract_attendees(parsed)
     meeting   = extract_meeting_metadata(parsed)
     summary   = summarize(parsed, attendees)
+
+    # Demo path 1: a clearly-detected meeting in the file → stage as a
+    # meeting draft and ask online/offline. We bypass the legacy upload-
+    # confirm broadcast path because the new card is the better UX.
+    if meeting and meeting.get("found"):
+        participants = []
+        for a in attendees or []:
+            n = a.get("name") or a.get("email") or a.get("phone")
+            if n:
+                participants.append(n)
+        draft = {
+            "title":      meeting.get("title"),
+            "start_time": meeting.get("start_time"),
+            "end_time":   meeting.get("end_time"),
+            "location":   meeting.get("location"),
+            "agenda":     meeting.get("agenda"),
+            "participants": participants,
+            "mode": None,
+        }
+        # Ack to the user so the chat reflects the extraction.
+        _reply(phone,
+               f"I see you want to schedule a meeting — extracted these details:\n\n"
+               f"{_meeting_summary_text(draft)}",
+               org_id=user.get("org_id"), user_id=user.get("id"))
+        _stage_meeting_draft(phone, user, draft)
+        return
 
     meeting_summary = summarize_meeting(meeting)
     if meeting_summary:
@@ -549,6 +581,164 @@ def _save_pending_timetable(user: Dict[str, Any], phone: str,
             "message": f"Saved {rows} class(es). Students can now ask me where you are."}
 
 
+# ---------------------------------------------------------------------------
+# Meeting scheduler card (Path 1 + Path 2)
+# ---------------------------------------------------------------------------
+
+def _meeting_summary_text(draft: Dict[str, Any]) -> str:
+    """Compact text summary used inside both the mode-pick and confirm cards."""
+    title    = draft.get("title")    or "Untitled meeting"
+    start    = draft.get("start_time") or "(time TBD)"
+    end      = draft.get("end_time")
+    location = draft.get("location")
+    agenda   = draft.get("agenda")
+    parts    = draft.get("participants") or []
+
+    when = start
+    if start and end:
+        when = f"{start} → {end}"
+
+    lines = [f"📅 *{title}*", f"🕒 {when}"]
+    if location:
+        lines.append(f"📍 {location}")
+    if parts:
+        if len(parts) <= 4:
+            lines.append("👥 " + ", ".join(parts))
+        else:
+            lines.append(f"👥 {', '.join(parts[:4])} (+{len(parts)-4} more)")
+    if agenda:
+        lines.append(f"📝 {agenda}")
+    return "\n".join(lines)
+
+
+def _send_meeting_mode_buttons(phone: str, user: Dict[str, Any],
+                               draft: Dict[str, Any]) -> None:
+    """After extraction, ask Online vs Offline."""
+    body = (f"{_meeting_summary_text(draft)}\n\n"
+            "Should this be *online* or *offline*?")
+    try:
+        result = send_buttons(
+            to_phone=phone,
+            body=body,
+            buttons=[
+                {"id": BTN_MEETING_ONLINE,  "title": "Online"},
+                {"id": BTN_MEETING_OFFLINE, "title": "Offline"},
+                {"id": BTN_MEETING_DISCARD, "title": "Discard"},
+            ],
+            footer="S.A.M.",
+        )
+        if not result.get("success"):
+            raise RuntimeError(result.get("error"))
+        append_history(phone, "assistant", body, extra={"interactive": True})
+    except Exception:
+        _reply(phone, body + "\n\nReply *online* or *offline*.",
+               org_id=user.get("org_id"), user_id=user.get("id"))
+
+
+def _send_meeting_confirm_card(phone: str, user: Dict[str, Any],
+                               draft: Dict[str, Any]) -> None:
+    """After Online/Offline pick, show the full card with Confirm/Edit/Discard."""
+    mode = (draft.get("mode") or "").lower()
+    extra = ""
+    if mode == "online":
+        extra = "🔗 _Google Meet link will be created on confirm._"
+    elif mode == "offline":
+        room = draft.get("location") or "TBD"
+        extra = (f"🚪 Offline — room *{room}*.\n"
+                 "_I'll notify the booking authority for confirmation._")
+
+    body = f"{_meeting_summary_text(draft)}\n\n{extra}\n\nLooks correct?"
+    try:
+        result = send_buttons(
+            to_phone=phone,
+            body=body,
+            buttons=[
+                {"id": BTN_MEETING_CONFIRM, "title": "Yes, schedule"},
+                {"id": BTN_MEETING_EDIT,    "title": "Edit"},
+                {"id": BTN_MEETING_DISCARD, "title": "Discard"},
+            ],
+            footer="S.A.M.",
+        )
+        if not result.get("success"):
+            raise RuntimeError(result.get("error"))
+        append_history(phone, "assistant", body, extra={"interactive": True})
+    except Exception:
+        _reply(phone,
+               body + "\n\nReply *yes* to schedule, *edit* to change a field, "
+               "or *discard*.",
+               org_id=user.get("org_id"), user_id=user.get("id"))
+
+
+def _stage_meeting_draft(phone: str, user: Dict[str, Any],
+                         draft: Dict[str, Any]) -> None:
+    """Persist a parsed meeting draft into the session and ask online/offline."""
+    session = get_session(phone) or {}
+    session.update({
+        "user_id": user["id"],
+        "org_id":  user["org_id"],
+        "state":   "AWAITING_MEETING_MODE",
+        "pending_meeting_draft": draft,
+    })
+    set_session(phone, session)
+    _send_meeting_mode_buttons(phone, user, draft)
+
+
+def _execute_pending_meeting(user: Dict[str, Any], phone: str,
+                             session: Dict[str, Any]) -> Dict[str, Any]:
+    """User tapped Confirm. Create the calendar event, surface meet link or
+    trigger booking flow, return the message body for the orchestrator reply."""
+    from datetime import datetime as _dt
+    from src.services.meeting_creator import create_meeting
+
+    draft = session.get("pending_meeting_draft") or {}
+    if not draft.get("start_time"):
+        return {"success": False,
+                "message": "I don't have a start time for that meeting yet."}
+
+    mode = (draft.get("mode") or "online").lower()
+    result = create_meeting(
+        title=draft.get("title") or "Meeting",
+        start_datetime=draft["start_time"],
+        end_datetime=draft.get("end_time") or draft["start_time"],
+        participant_names=draft.get("participants") or [],
+        scheduler_email=user.get("email"),
+        org_id=user.get("org_id"),
+        mode=mode,
+    )
+
+    if not result.get("success"):
+        return result
+
+    msg_lines = ["✅ Meeting scheduled."]
+    if result.get("meeting_id"):
+        msg_lines.append(f"Calendar event ID: `{result['meeting_id']}`")
+    if mode == "online" and result.get("meet_link"):
+        msg_lines.append(f"🔗 Meet link: {result['meet_link']}")
+    if mode == "offline" and draft.get("location"):
+        # Trigger booking authority approval.
+        try:
+            from src.services.booking_service import request_booking
+            starts = _dt.fromisoformat(str(draft["start_time"]).replace("Z", ""))
+            ends_iso = draft.get("end_time") or draft["start_time"]
+            ends = _dt.fromisoformat(str(ends_iso).replace("Z", ""))
+            request_booking(
+                org_id=user["org_id"], requested_by=user["id"],
+                room_label=draft["location"], starts_at=starts,
+                ends_at=ends, purpose=draft.get("title"),
+                meeting_id=result.get("meeting_id"),
+                requester_name=user.get("full_name"),
+            )
+            msg_lines.append(f"🚪 Booking authority notified for *{draft['location']}*.")
+        except Exception:
+            logger.exception("request_booking failed for meeting %s", result.get("meeting_id"))
+            msg_lines.append(
+                f"⚠️ Couldn't reach the booking authority for {draft['location']} — "
+                "you may want to confirm the room manually.")
+
+    msg_lines.append("Invites sent. I'll remind everyone 30 min before.")
+    return {"success": True, "data": result, "message": "\n".join(msg_lines)}
+
+
 def _execute_pending_upload(user: Dict[str, Any], phone: str,
                             session: Dict[str, Any], entities: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -831,6 +1021,66 @@ def _handle_text(user: Dict[str, Any], phone: str, text: str) -> None:
                org_id=user.get("org_id"), user_id=user.get("id"))
         return
 
+    # ----- Meeting scheduler card (Path 2 / NL + bare intent / edit reply) -----
+    if intent == "create_meeting":
+        ents = parsed_intent.get("entities", {}) or {}
+        # If the user is in the middle of editing a staged draft, fold the
+        # newly-extracted fields into the existing draft and re-prompt.
+        if session.get("state") == "AWAITING_MEETING_EDIT":
+            draft = session.get("pending_meeting_draft") or {}
+            for k in ("title", "start_time", "end_time", "location", "agenda"):
+                if ents.get(k):
+                    draft[k] = ents[k]
+            if ents.get("participants"):
+                draft["participants"] = ents["participants"]
+            if ents.get("mode"):
+                draft["mode"] = ents["mode"]
+            session["pending_meeting_draft"] = draft
+            session["state"] = "AWAITING_MEETING_CONFIRM" if draft.get("mode") \
+                               else "AWAITING_MEETING_MODE"
+            set_session(phone, session)
+            if draft.get("mode"):
+                _send_meeting_confirm_card(phone, user, draft)
+            else:
+                _send_meeting_mode_buttons(phone, user, draft)
+            return
+
+        # Bare-intent: faculty said "schedule meeting" with nothing concrete.
+        has_anything = any(ents.get(k) for k in
+                           ("title", "start_time", "end_time", "location",
+                            "agenda", "participants"))
+        if not has_anything:
+            session["state"] = "AWAITING_MEETING_INPUT"
+            set_session(phone, session)
+            _reply(phone,
+                   "Sure — send me a *photo* of the circular, or just *tell me* "
+                   "the details (date, time, location, attendees, agenda).",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+
+        # Stage the draft and ask online/offline.
+        draft = {
+            "title":      ents.get("title"),
+            "start_time": ents.get("start_time"),
+            "end_time":   ents.get("end_time"),
+            "location":   ents.get("location"),
+            "agenda":     ents.get("agenda"),
+            "participants": ents.get("participants") or [],
+            "mode":       ents.get("mode"),
+        }
+        # If the LLM already inferred mode from the wording (e.g. "online
+        # meeting tomorrow"), skip straight to the confirm card.
+        if draft.get("mode") in ("online", "offline"):
+            session.update({
+                "state": "AWAITING_MEETING_CONFIRM",
+                "pending_meeting_draft": draft,
+            })
+            set_session(phone, session)
+            _send_meeting_confirm_card(phone, user, draft)
+            return
+        _stage_meeting_draft(phone, user, draft)
+        return
+
     # Otherwise, route through the standard intent router.
     result = route_intent(
         parsed_intent,
@@ -932,6 +1182,57 @@ def _handle_interactive(user: Dict[str, Any], phone: str,
             _reply(phone, "Okay, I've discarded those tasks.",
                    org_id=user.get("org_id"), user_id=user.get("id"))
             return
+
+        # ----- Meeting scheduler card -----
+        if btn_id in (BTN_MEETING_ONLINE, BTN_MEETING_OFFLINE,
+                      BTN_MEETING_CONFIRM, BTN_MEETING_EDIT, BTN_MEETING_DISCARD):
+            try:
+                if btn_id in (BTN_MEETING_ONLINE, BTN_MEETING_OFFLINE):
+                    draft = session.get("pending_meeting_draft") or {}
+                    if not draft:
+                        _reply(phone,
+                               "That card has expired — say *schedule meeting* "
+                               "to start again.",
+                               org_id=user.get("org_id"), user_id=user.get("id"))
+                        return
+                    draft["mode"] = "online" if btn_id == BTN_MEETING_ONLINE else "offline"
+                    session["pending_meeting_draft"] = draft
+                    session["state"] = "AWAITING_MEETING_CONFIRM"
+                    set_session(phone, session)
+                    _send_meeting_confirm_card(phone, user, draft)
+                    return
+
+                if btn_id == BTN_MEETING_CONFIRM:
+                    result = _execute_pending_meeting(user, phone, session)
+                    clear_session(phone)
+                    _reply(phone,
+                           result.get("message") or
+                           ("Scheduled." if result.get("success")
+                            else f"Couldn't schedule: {result.get('error') or 'unknown error'}"),
+                           org_id=user.get("org_id"), user_id=user.get("id"))
+                    return
+
+                if btn_id == BTN_MEETING_EDIT:
+                    session["state"] = "AWAITING_MEETING_EDIT"
+                    set_session(phone, session)
+                    _reply(phone,
+                           "What should I change? Reply with the field — e.g. "
+                           "*time 4pm*, *room 305*, *make it online*.",
+                           org_id=user.get("org_id"), user_id=user.get("id"))
+                    return
+
+                if btn_id == BTN_MEETING_DISCARD:
+                    clear_session(phone)
+                    _reply(phone, "Okay, dropped that meeting.",
+                           org_id=user.get("org_id"), user_id=user.get("id"))
+                    return
+            except Exception as e:
+                logger.exception("Meeting card button %s failed", btn_id)
+                _reply(phone,
+                       f"⚠️ Something went wrong handling that button: {e}. "
+                       "Try saying *schedule meeting* again.",
+                       org_id=user.get("org_id"), user_id=user.get("id"))
+                return
 
         # ----- Booking approve/deny (M5) -----
         if btn_id and btn_id.startswith("sam_booking_"):

@@ -164,66 +164,79 @@ def complete_onboarding(token: str, google_userinfo: Dict[str, Any],
         identifier = row["identifier"]
         tg_username = row.get("telegram_username")
 
-        # Email match against pre-seeded roster — the institutional
-        # verification path. Insert-or-update.
+        # ---- Roster gate: reject any Google email that wasn't pre-seeded.
+        # The institutional roster (data/students.csv + data/faculty.csv,
+        # loaded via scripts/load_rosters.py) IS the source of truth for
+        # who can onboard. Anyone not in that table gets a friendly DM and
+        # the token stays consumed (anti-replay).
+        cur.execute(
+            "SELECT id, role FROM users WHERE email = %s AND org_id = %s LIMIT 1;",
+            (email, _DEFAULT_ORG_ID),
+        )
+        roster_hit = cur.fetchone()
+        if not roster_hit:
+            conn.commit()
+            cur.close()
+            logger.info("complete_onboarding: rejecting non-roster email %s "
+                        "(channel=%s)", email, channel)
+            _notify_rejected(channel, identifier, email)
+            return {
+                "rejected": True,
+                "reason": "not_in_roster",
+                "email": email,
+                "channel": channel,
+            }
+
+        # Roster match → UPDATE only (we know the row exists, role is preserved).
         if channel == "telegram":
             cur.execute(
                 """
-                INSERT INTO users
-                    (org_id, email, full_name, picture_url, role,
-                     access_token, encrypted_refresh_token,
-                     telegram_chat_id, telegram_username)
-                VALUES (%s, %s, %s, %s, 'STUDENT', %s, %s, %s, %s)
-                ON CONFLICT (email) DO UPDATE
-                    SET full_name               = COALESCE(EXCLUDED.full_name, users.full_name),
-                        picture_url             = COALESCE(EXCLUDED.picture_url, users.picture_url),
-                        access_token            = EXCLUDED.access_token,
-                        encrypted_refresh_token = COALESCE(EXCLUDED.encrypted_refresh_token,
-                                                           users.encrypted_refresh_token),
-                        telegram_chat_id        = EXCLUDED.telegram_chat_id,
-                        telegram_username       = EXCLUDED.telegram_username,
-                        updated_at              = NOW()
+                UPDATE users
+                   SET full_name               = COALESCE(%s, full_name),
+                       picture_url             = COALESCE(%s, picture_url),
+                       access_token            = %s,
+                       encrypted_refresh_token = COALESCE(%s, encrypted_refresh_token),
+                       telegram_chat_id        = %s,
+                       telegram_username       = %s,
+                       updated_at              = NOW()
+                 WHERE email = %s AND org_id = %s
                 RETURNING id, org_id, email, full_name, role, picture_url,
                           phone_number, batch, telegram_chat_id, telegram_username,
                           office_location;
                 """,
                 (
-                    _DEFAULT_ORG_ID,
-                    email,
-                    google_userinfo.get("name", email),
-                    google_userinfo.get("picture"),
+                    google_userinfo.get("name") or None,
+                    google_userinfo.get("picture") or None,
                     access_token,
                     encrypted_refresh_token,
                     int(identifier),
                     tg_username,
+                    email,
+                    _DEFAULT_ORG_ID,
                 ),
             )
         else:  # whatsapp
             cur.execute(
                 """
-                INSERT INTO users
-                    (org_id, email, full_name, picture_url, role,
-                     access_token, encrypted_refresh_token, phone_number)
-                VALUES (%s, %s, %s, %s, 'STUDENT', %s, %s, %s)
-                ON CONFLICT (email) DO UPDATE
-                    SET full_name               = COALESCE(EXCLUDED.full_name, users.full_name),
-                        picture_url             = COALESCE(EXCLUDED.picture_url, users.picture_url),
-                        access_token            = EXCLUDED.access_token,
-                        encrypted_refresh_token = COALESCE(EXCLUDED.encrypted_refresh_token,
-                                                           users.encrypted_refresh_token),
-                        phone_number            = EXCLUDED.phone_number,
-                        updated_at              = NOW()
+                UPDATE users
+                   SET full_name               = COALESCE(%s, full_name),
+                       picture_url             = COALESCE(%s, picture_url),
+                       access_token            = %s,
+                       encrypted_refresh_token = COALESCE(%s, encrypted_refresh_token),
+                       phone_number            = %s,
+                       updated_at              = NOW()
+                 WHERE email = %s AND org_id = %s
                 RETURNING id, org_id, email, full_name, role, picture_url,
                           phone_number, batch, office_location;
                 """,
                 (
-                    _DEFAULT_ORG_ID,
-                    email,
-                    google_userinfo.get("name", email),
-                    google_userinfo.get("picture"),
+                    google_userinfo.get("name") or None,
+                    google_userinfo.get("picture") or None,
                     access_token,
                     encrypted_refresh_token,
                     identifier,
+                    email,
+                    _DEFAULT_ORG_ID,
                 ),
             )
         user = dict(cur.fetchone())
@@ -336,6 +349,30 @@ def _send_welcome(channel: str, user: Dict[str, Any]) -> None:
                                f"✅ Linked as {name}. Reply 'help' for what I can do.")
         except Exception:
             pass
+
+
+def _notify_rejected(channel: str, identifier: str, email: str) -> None:
+    """
+    Best-effort DM to a user whose Google email isn't in the institutional
+    roster. Token has already been marked consumed (anti-replay) by the
+    caller.
+    """
+    body = (f"❌ Sorry — your Google account <b>{email}</b> is not on the "
+            "institute roster. If this is a mistake, please reach out to "
+            "your admin.")
+    try:
+        if channel == "telegram":
+            from src.services.telegram_service import send_text
+            send_text(int(identifier), body)
+        elif channel == "whatsapp":
+            from src.services.whatsapp_queue import queue_whatsapp
+            queue_whatsapp(identifier,
+                           f"Sorry — your Google account {email} is not on "
+                           "the institute roster. If this is a mistake, "
+                           "please reach out to your admin.")
+    except Exception:
+        logger.exception("Failed to DM rejected onboarder %s on %s",
+                         email, channel)
 
 
 def _faculty_has_timetable(user_id: int) -> bool:

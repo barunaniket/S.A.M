@@ -14,7 +14,8 @@ services:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 30
+      start_period: 60s    # NTFS bind-mount makes first-time initdb slow
 
   # 2. The Cache & Queue (Redis)
   redis:

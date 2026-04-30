@@ -76,6 +76,21 @@ async def auth_callback(payload: LoginRequest):
                 status_code=400,
                 detail="Onboarding token is invalid, expired, or already used.",
             )
+        if user.get("rejected"):
+            # Email isn't in the institutional roster. The user has already
+            # received a Telegram/WhatsApp DM explaining this; the browser
+            # gets a structured 403 so the frontend can show a friendly
+            # "not on roster" page.
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "not_in_roster",
+                    "email": user.get("email"),
+                    "channel": user.get("channel"),
+                    "message": "Your Google account is not on the institute "
+                               "roster. Please contact your admin.",
+                },
+            )
         return {
             "message": "Onboarding complete",
             "onboarded": True,

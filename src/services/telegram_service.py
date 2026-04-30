@@ -117,6 +117,39 @@ def send_buttons(chat_id: int, body: str,
     return {"success": True, "data": resp.json()}
 
 
+def send_photo(chat_id: int, file_path: str,
+               caption: Optional[str] = None) -> Dict:
+    """
+    Send a photo file (JPEG/PNG) from local disk via sendPhoto. Returns
+    the same shape as send_text. Used by the assignment-submission
+    notification path.
+    """
+    if not is_configured():
+        return {"success": False, "error": "TELEGRAM_BOT_TOKEN not configured"}
+    if not chat_id or not file_path:
+        return {"success": False, "error": "Missing chat_id or file_path"}
+
+    data: Dict = {"chat_id": str(int(chat_id)), "parse_mode": "HTML"}
+    if caption:
+        data["caption"] = caption[:1024]
+
+    try:
+        with open(file_path, "rb") as fh:
+            files = {"photo": (file_path.rsplit("/", 1)[-1], fh)}
+            with httpx.Client(timeout=30.0) as client:
+                resp = client.post(_bot_url("sendPhoto"),
+                                   data=data, files=files)
+    except Exception as e:
+        logger.exception("send_photo open/post failed")
+        return {"success": False, "error": str(e)}
+    if resp.status_code >= 300:
+        logger.error("Telegram send_photo failed: %s %s",
+                     resp.status_code, resp.text)
+        return {"success": False, "status": resp.status_code,
+                "error": resp.text}
+    return {"success": True, "data": resp.json()}
+
+
 def answer_callback(callback_query_id: str, text: str = "") -> None:
     """
     Acknowledge a button tap. Telegram shows a spinner on the tapped button
