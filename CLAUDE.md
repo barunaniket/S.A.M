@@ -27,7 +27,8 @@ The v4–v8 release expanded this with role-aware extensions: `SUPER_ADMIN`, `BO
 ## Architecture in one breath
 
 - **API**: FastAPI (`src/main.py`) → JWT middleware → `src/services/intent_router.py` for natural-language → handler dispatch.
-- **Worker**: Celery (`src/worker.py`) consumes Redis queues for email + WhatsApp fan-out; `beat` container ticks `tick_user_briefings` every 5 min.
+- **Worker**: Celery (`src/worker.py`) consumes Redis queues for email + WhatsApp + Telegram fan-out; `beat` container ticks `tick_user_briefings` every 5 min.
+- **Telegram channel**: mirrors the WhatsApp surface 1:1 — `telegram_service.py`, `telegram_queue.py`, `telegram_orchestrator.py`, `telegram_poller.py` (long-poll worker, no public webhook needed). Pairing flow: `/api/v1/me/telegram/pair` issues a 6-char code; user DMs `/start CODE` to bind `users.telegram_chat_id`. Same `intent_router`, `file_ingestor`, and `whatsapp_audit` (with `channel='telegram'`) — no new abstractions.
 - **Datastore**: PostgreSQL 15 with row-level security per `org_id`; Redis 7 for queues, distributed locks (`src/utils/concurrency.py`), and the conversation store.
 - **LLM**: NVIDIA OpenAI-compatible endpoint (`meta/llama-3.3-70b-instruct` default); Gemini optional. `src/services/llm_processor.py` extracts intent; `src/services/clarification_agent.py` disambiguates.
 - **External**: Google Calendar (events + freebusy + self-healing reconcile in `src/utils/self_healing_calendar.py`), Gmail SMTP for `.ics` invites, Meta WhatsApp Cloud API.
@@ -63,9 +64,80 @@ python scripts/migrate_v5_timetable.py
 python scripts/migrate_v6_academic_calendar.py
 python scripts/migrate_v7_tasks.py
 python scripts/migrate_v8_booking_briefing.py
-python scripts/seed_db.py                           # optional sample data
+python scripts/migrate_v9_telegram.py
+python scripts/migrate_v10_demo.py
+python scripts/migrate_v11_mcq.py
+python scripts/migrate_v12_mvp.py
+python scripts/seed_demo.py                         # minimal demo cast (SPOC + Priya/Rahul + Arjun/Riya)
+python scripts/load_rosters.py --timetables        # full synthetic rosters from data/*.csv
 ```
+
+`load_rosters.py` reads `data/students.csv` + `data/faculty.csv` (+ `data/timetable.csv`
+when `--timetables` is passed). It UPSERTs users, refreshes class user_groups for every
+distinct batch, and is idempotent — re-running after a CSV edit just applies the diff.
 After v4+: re-login so the JWT picks up the new `role` claim.
+
+### Chat-first onboarding (Telegram, v10)
+
+Anyone DMing the bot for the first time goes straight through Google OAuth — no
+web pairing code needed. `telegram_orchestrator._start_chat_first_onboarding`
+calls `services/onboarding.start_onboarding`, which writes an
+`onboarding_tokens` row and returns a Google OAuth URL with
+`state=onboard:tg:<token>`. The `/auth/callback` route detects that prefix and
+routes through `complete_onboarding`, which matches the user by email against
+the pre-seeded roster (institutional Gmail = verification), binds
+`users.telegram_chat_id`, and pushes a welcome DM. Faculty without a timetable
+land in `AWAITING_TIMETABLE`; students without a batch land in
+`AWAITING_BATCH`. The web-first `/start CODE` pairing path is still wired in
+parallel for users who came in via the web first.
+
+### MCQ-based attendance (v11)
+
+Faculty triggers a quiz at the end of class via `start mcq attendance for <subject>`.
+`src/services/attendance_mcq.py` handles the lifecycle:
+
+1. `start_session` inserts an `mcq_sessions` row (questions persisted as JSONB)
+   and schedules N Celery `dispatch_mcq_question` tasks at +0s, +15s, +30s, …
+   plus one `close_mcq_session` task at the end of the window.
+2. Each dispatch fans out an inline-keyboard message to every paired student
+   in `users` whose `batch` matches the session.
+3. Student taps trigger `mcq_<sid>_<q>_<c>` callback queries handled in
+   `telegram_orchestrator._handle_callback` → `record_answer` writes to
+   `mcq_responses` (UNIQUE on session/user/q so retaps are no-ops).
+4. `close_session` reads every response, scores each student against
+   `questions[*].correct`, ignores responses that landed after the question's
+   window, and writes one row per student to `attendance_records`
+   (PRESENT if score ≥ threshold, default 4/5).
+5. Faculty gets a Telegram DM with the full breakdown plus a hint —
+   replying `mark <name> present|absent` triggers `override_attendance`
+   which flips the record (and stamps `overridden=TRUE`).
+
+Question source for the demo is hardcoded in `attendance_mcq.QUESTION_BANK`
+(DSA, Compilers, Algorithms — 5 questions each). Replace with an
+`mcq_question_bank` table for production.
+
+### Period-aware faculty lookup (v10)
+
+`src/utils/periods.py` hardcodes the bell schedule (1st 09:00-09:50, … 4th
+12:00-12:50, lunch, 5th 14:00-14:50, …). The LLM `query_faculty_status` intent
+now extracts `query_period` (1-8) and `query_day_keyword` ("today", "tomorrow",
+weekday) alongside `query_time`. `intent_router` resolves the period to a
+datetime, calls `who_is_busy_at`, and falls back to `users.office_location`
+when the faculty has no class — "Dr Sharma doesn't have a class during 4th
+period — she should be in Faculty Block, Room 312."
+
+### Telegram (optional)
+```bash
+# 1. Create a bot via @BotFather, copy the HTTP token
+# 2. Set in .env:
+#       TELEGRAM_BOT_TOKEN=123456:ABC...
+#       TELEGRAM_BOT_USERNAME=samscheduler_bot   # @-less, used to build deep links
+# 3. Run migration v9, then:
+docker compose up -d telegram telegram_queue_worker
+#       OR for host-side dev:
+python -m src.services.telegram_poller
+# 4. Web UI → /app/settings → Telegram tab → Connect → DM the bot /start CODE
+```
 
 ### Tests
 ```bash

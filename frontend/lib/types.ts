@@ -29,6 +29,21 @@ export type GoogleStatus = {
   email?: string;
 };
 
+export type TelegramStatus = {
+  linked: boolean;
+  configured: boolean;
+  username?: string | null;
+  chat_id?: number | null;
+};
+
+export type TelegramPairResponse = {
+  code: string;
+  expires_at: string;
+  ttl_minutes: number;
+  bot_username?: string | null;
+  deep_link?: string | null;
+};
+
 export type AgendaMeeting = {
   id?: string | number;
   title?: string;

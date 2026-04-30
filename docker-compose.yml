@@ -14,7 +14,8 @@ services:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 30
+      start_period: 60s    # NTFS bind-mount makes first-time initdb slow
 
   # 2. The Cache & Queue (Redis)
   redis:
@@ -65,6 +66,37 @@ services:
     depends_on:
       - worker
       - redis
+
+  # 6. Telegram long-poller — fetches updates from the Bot API and hands
+  # them to telegram_orchestrator.handle_update. Kept out of the FastAPI
+  # container so a stalled long-poll cannot pin a request worker.
+  # If TELEGRAM_BOT_TOKEN is unset the poller exits cleanly at startup —
+  # safe to leave in compose for setups that don't use Telegram yet.
+  telegram:
+    build: .
+    command: python -m src.services.telegram_poller
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      - backend
+      - redis
+    restart: unless-stopped
+
+  # 7. Telegram outbound queue worker — drains telegram_queue Redis list and
+  # ships messages out via the Bot API. Mirror of the WhatsApp queue worker
+  # (which currently piggy-backs on Celery via send_whatsapp).
+  telegram_queue_worker:
+    build: .
+    command: python -c "from src.services.telegram_queue import process_telegram_queue; process_telegram_queue()"
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    restart: unless-stopped
 
   # NOTE: The Next.js frontend runs on the host (not in Docker).
   # Next's file watcher and .next cache are unreliable on this project's

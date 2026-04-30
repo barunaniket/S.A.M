@@ -27,26 +27,32 @@ def _normalize_phone(phone: Optional[str]) -> Optional[str]:
 def _insert(direction: str, phone: Optional[str], msg_type: Optional[str],
             body: Optional[str], intent: Optional[str],
             org_id: Optional[int], user_id: Optional[int],
-            metadata: Optional[Dict[str, Any]]) -> None:
+            metadata: Optional[Dict[str, Any]],
+            channel: str = "whatsapp") -> None:
     conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
+        # Telegram chat IDs are pure digits but we don't want to drop the
+        # leading characters of a real phone, so only normalize when channel
+        # is whatsapp. Telegram passes the chat_id as a string of digits.
+        phone_value = _normalize_phone(phone) if channel == "whatsapp" else (phone or None)
         cur.execute(
             """
             INSERT INTO whatsapp_audit
-                (org_id, user_id, phone, direction, msg_type, body, intent, metadata)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
+                (org_id, user_id, phone, direction, msg_type, body, intent, metadata, channel)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
             """,
             (
                 org_id,
                 user_id,
-                _normalize_phone(phone),
+                phone_value,
                 direction,
                 (msg_type or "text")[:20],
                 (body or "")[:4096],
                 (intent or None) and intent[:40],
                 json.dumps(metadata, default=str) if metadata else None,
+                (channel or "whatsapp")[:16],
             ),
         )
         conn.commit()
@@ -68,16 +74,18 @@ def _insert(direction: str, phone: Optional[str], msg_type: Optional[str],
 def log_inbound(phone: Optional[str], msg_type: str, body: Optional[str] = None,
                 intent: Optional[str] = None,
                 org_id: Optional[int] = None, user_id: Optional[int] = None,
-                metadata: Optional[Dict[str, Any]] = None) -> None:
-    _insert("inbound", phone, msg_type, body, intent, org_id, user_id, metadata)
+                metadata: Optional[Dict[str, Any]] = None,
+                channel: str = "whatsapp") -> None:
+    _insert("inbound", phone, msg_type, body, intent, org_id, user_id, metadata, channel)
 
 
 def log_outbound(phone: Optional[str], body: Optional[str],
                  msg_type: str = "text",
                  intent: Optional[str] = None,
                  org_id: Optional[int] = None, user_id: Optional[int] = None,
-                 metadata: Optional[Dict[str, Any]] = None) -> None:
-    _insert("outbound", phone, msg_type, body, intent, org_id, user_id, metadata)
+                 metadata: Optional[Dict[str, Any]] = None,
+                 channel: str = "whatsapp") -> None:
+    _insert("outbound", phone, msg_type, body, intent, org_id, user_id, metadata, channel)
 
 
 def list_recent(org_id: int, phone: Optional[str] = None, limit: int = 100):

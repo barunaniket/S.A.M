@@ -6,7 +6,13 @@ import { useSearchParams } from "next/navigation";
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
-type Status = "init" | "posting" | "saving" | "redirecting" | "error";
+type Status =
+  | "init"
+  | "posting"
+  | "saving"
+  | "redirecting"
+  | "onboarded"
+  | "error";
 
 // Module-level dedupe so React strict mode's double-mount doesn't try to
 // exchange the same single-use Google code twice.
@@ -49,7 +55,13 @@ function CallbackInner() {
         });
 
         const text = await res.text();
-        let data: { token?: string; user?: unknown; detail?: unknown } = {};
+        let data: {
+          token?: string;
+          user?: { name?: string; email?: string; role?: string };
+          onboarded?: boolean;
+          channel?: string;
+          detail?: unknown;
+        } = {};
         try {
           data = JSON.parse(text);
         } catch {
@@ -63,6 +75,18 @@ function CallbackInner() {
               (typeof data.detail === "string"
                 ? data.detail
                 : text || res.statusText),
+          );
+          return;
+        }
+
+        // Chat-first onboarding response: no JWT, no SPA redirect.
+        // Show a "return to Telegram" success page.
+        if (data.onboarded) {
+          setStatus("onboarded");
+          const handle = data.user?.name ?? data.user?.email ?? "there";
+          const channel = (data.channel ?? "telegram").replace(/^./, (c) => c.toUpperCase());
+          setDetail(
+            `${handle} — you're all set. Return to ${channel} to continue setting up.`,
           );
           return;
         }
@@ -97,6 +121,7 @@ function CallbackInner() {
   }, [params]);
 
   const isError = status === "error";
+  const isOnboarded = status === "onboarded";
 
   return (
     <main className="grid min-h-screen place-items-center px-6">
@@ -115,6 +140,29 @@ function CallbackInner() {
             >
               Back to login
             </a>
+          </>
+        ) : isOnboarded ? (
+          <>
+            <div className="mx-auto mb-4 flex size-12 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-600">
+              <svg
+                width="24"
+                height="24"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            </div>
+            <h2 className="text-lg font-semibold">You&apos;re linked</h2>
+            <p className="mt-2 text-sm text-muted-foreground">{detail}</p>
+            <p className="mt-6 text-xs text-muted-foreground">
+              You can close this tab.
+            </p>
           </>
         ) : (
           <>

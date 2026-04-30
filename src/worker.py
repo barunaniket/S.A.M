@@ -57,6 +57,7 @@ def tick_user_briefings():
     from src.services.task_service import list_tasks_for_assignee
     from src.services.academic_calendar import events_in_range  # type: ignore[attr-defined]
     from src.services.whatsapp_queue import queue_whatsapp
+    from src.services.telegram_queue import queue_telegram
     from src.utils.db_handler import get_db_connection, release_db_connection
 
     log = logging.getLogger(__name__)
@@ -69,11 +70,11 @@ def tick_user_briefings():
         cur.execute(
             """
             SELECT up.user_id, up.briefing_time, up.timezone, u.org_id,
-                   u.full_name, u.phone_number
+                   u.full_name, u.phone_number, u.telegram_chat_id
               FROM user_preferences up
               JOIN users u ON u.id = up.user_id
              WHERE up.briefing_enabled = TRUE
-               AND u.phone_number IS NOT NULL;
+               AND (u.phone_number IS NOT NULL OR u.telegram_chat_id IS NOT NULL);
             """
         )
         prefs = [dict(r) for r in cur.fetchall()]
@@ -111,16 +112,29 @@ def tick_user_briefings():
         if not body:
             continue
 
-        try:
-            queue_whatsapp(p["phone_number"], body, metadata={
-                "channel": "daily_briefing",
-                "intent": "briefing",
-                "org_id": p["org_id"],
-                "user_id": p["user_id"],
-            })
+        meta = {
+            "channel": "daily_briefing",
+            "intent": "briefing",
+            "org_id": p["org_id"],
+            "user_id": p["user_id"],
+        }
+        delivered = False
+        if p.get("phone_number"):
+            try:
+                queue_whatsapp(p["phone_number"], body, metadata=meta)
+                delivered = True
+            except Exception:
+                log.exception("tick_user_briefings: WA queue failed for user %s",
+                              p["user_id"])
+        if p.get("telegram_chat_id"):
+            try:
+                queue_telegram(int(p["telegram_chat_id"]), body, metadata=meta)
+                delivered = True
+            except Exception:
+                log.exception("tick_user_briefings: TG queue failed for user %s",
+                              p["user_id"])
+        if delivered:
             sent_count += 1
-        except Exception:
-            log.exception("tick_user_briefings: queue failed for user %s", p["user_id"])
 
     log.info("tick_user_briefings: dispatched %d briefing(s)", sent_count)
     return f"sent={sent_count}"
@@ -217,6 +231,7 @@ def _bootstrap_worker(**_):
 def _send_task_reminder(window: str, task_id: int):
     from src.services.task_service import format_task_message, get_task
     from src.services.whatsapp_queue import queue_whatsapp
+    from src.services.telegram_queue import queue_telegram
     from src.services.email_queue import queue_email
     from src.utils.db_handler import (
         get_db_connection, release_db_connection, get_user_by_email,
@@ -228,21 +243,21 @@ def _send_task_reminder(window: str, task_id: int):
 
     body = format_task_message(task, kind=window)
 
-    # Resolve channels: prefer user record (phone + email) if matched.
+    # Resolve channels: prefer user record (phone + email + telegram) if matched.
     phone = task.get("assignee_phone")
     email = task.get("assignee_email")
-    if task.get("assignee_id") and not phone:
+    telegram_chat_id = task.get("assignee_telegram_chat_id")
+    if task.get("assignee_id") and (not phone or not telegram_chat_id):
         try:
-            from src.services.timetable_service import resolve_faculty_by_name
-            # cheap path: re-read user via email if we have it
             if email:
                 u = get_user_by_email(email)
-                if u and u.get("phone_number"):
-                    phone = u["phone_number"]
+                if u:
+                    phone = phone or u.get("phone_number")
+                    telegram_chat_id = telegram_chat_id or u.get("telegram_chat_id")
         except Exception:
             pass
 
-    sent_email = sent_wa = 0
+    sent_email = sent_wa = sent_tg = 0
     if email:
         try:
             queue_email(to_addr=email,
@@ -271,6 +286,21 @@ def _send_task_reminder(window: str, task_id: int):
             logging.getLogger(__name__).warning(
                 "task reminder whatsapp failed for task %s: %s", task_id, e)
 
+    if telegram_chat_id:
+        try:
+            queue_telegram(int(telegram_chat_id), body, metadata={
+                "channel": "task_reminder",
+                "type": f"reminder_{window}",
+                "intent": "reminder",
+                "task_id": task_id,
+                "org_id": task.get("org_id"),
+                "user_id": task.get("assignee_id"),
+            })
+            sent_tg = 1
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "task reminder telegram failed for task %s: %s", task_id, e)
+
     # Mark the matching reminder row as fired (best-effort).
     conn = get_db_connection()
     try:
@@ -288,7 +318,8 @@ def _send_task_reminder(window: str, task_id: int):
     finally:
         release_db_connection(conn)
 
-    return f"task {task_id} {window} reminder: {sent_email} email, {sent_wa} whatsapp"
+    return (f"task {task_id} {window} reminder: "
+            f"{sent_email} email, {sent_wa} whatsapp, {sent_tg} telegram")
 
 
 @celery_app.task(name="send_task_reminder_24h")
@@ -324,6 +355,35 @@ def send_whatsapp(self, to_phone: str, body: str):
     return result
 
 
+@celery_app.task(name="dispatch_mcq_question")
+def dispatch_mcq_question(session_id: int, q_index: int):
+    """Push a single MCQ question to every paired student in the batch."""
+    from src.services.attendance_mcq import dispatch_question
+    dispatch_question(session_id, q_index)
+    return f"mcq session {session_id} q{q_index} dispatched"
+
+
+@celery_app.task(name="close_mcq_session")
+def close_mcq_session(session_id: int):
+    """Score the session, write attendance_records, DM the faculty."""
+    from src.services.attendance_mcq import close_session
+    result = close_session(session_id)
+    return f"mcq session {session_id} closed: {result.get('success')}"
+
+
+@celery_app.task(name="send_telegram", bind=True, max_retries=3)
+def send_telegram(self, chat_id: int, body: str):
+    from src.services.telegram_service import send_text
+
+    result = send_text(chat_id=int(chat_id), body=body)
+    if not result.get("success"):
+        raise self.retry(
+            exc=RuntimeError(result.get("error") or "Telegram send failed"),
+            countdown=min(2 ** self.request.retries, 30),
+        )
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Lightweight-meeting reminders (upload-driven flow). Unlike the email-only
 # reminder tasks above, these take the full attendee list inline (name/email/
@@ -349,14 +409,16 @@ def _send_lite_reminder(window: str, meeting_id, title: str,
                         attendees: list) -> str:
     from src.services.email_queue import queue_email
     from src.services.whatsapp_queue import queue_whatsapp
+    from src.services.telegram_queue import queue_telegram
 
     body = _format_lite_reminder(window, title, start_time, location)
     subject = f"Reminder: \"{title}\" is " + ("tomorrow" if window == "24h" else "starting in 1 hour")
 
-    sent_email = sent_wa = 0
+    sent_email = sent_wa = sent_tg = 0
     for a in attendees or []:
         email = a.get("email")
         phone = a.get("phone")
+        tg    = a.get("telegram_chat_id")
 
         if email:
             try:
@@ -380,7 +442,20 @@ def _send_lite_reminder(window: str, meeting_id, title: str,
             except Exception as e:
                 print(f"[reminder_lite_{window}] whatsapp queue failed for {phone}: {e}")
 
-    return f"{window} lite reminder for meeting {meeting_id}: {sent_email} email, {sent_wa} whatsapp"
+        if tg:
+            try:
+                queue_telegram(int(tg), body, metadata={
+                    "channel":    "meeting_lite",
+                    "type":       f"reminder_{window}",
+                    "intent":     "reminder",
+                    "meeting_id": meeting_id,
+                })
+                sent_tg += 1
+            except Exception as e:
+                print(f"[reminder_lite_{window}] telegram queue failed for {tg}: {e}")
+
+    return (f"{window} lite reminder for meeting {meeting_id}: "
+            f"{sent_email} email, {sent_wa} whatsapp, {sent_tg} telegram")
 
 
 @celery_app.task(name="send_meeting_lite_reminder_24h")
@@ -416,6 +491,7 @@ def send_reminder_24h(
     """
     from src.services.email_queue import queue_email
     from src.services.whatsapp_queue import queue_whatsapp
+    from src.services.telegram_queue import queue_telegram
     from src.utils.db_handler import get_user_by_email
 
     subject = f"Reminder: \"{title}\" is tomorrow"
@@ -447,8 +523,21 @@ def send_reminder_24h(
                         "user_id":    user.get("id"),
                     },
                 )
+            if user and user.get("telegram_chat_id"):
+                queue_telegram(
+                    int(user["telegram_chat_id"]),
+                    body,
+                    metadata={
+                        "channel":    "reminder",
+                        "type":       "reminder_24h",
+                        "intent":     "reminder",
+                        "meeting_id": meeting_id,
+                        "org_id":     user.get("org_id"),
+                        "user_id":    user.get("id"),
+                    },
+                )
         except Exception as e:
-            print(f"[reminder_24h] WhatsApp queue failed for {email}: {e}")
+            print(f"[reminder_24h] DM queue failed for {email}: {e}")
 
     return f"24h reminders queued for meeting {meeting_id}"
 
@@ -467,6 +556,7 @@ def send_reminder_1h(
     """
     from src.services.notification import create_notification
     from src.services.whatsapp_queue import queue_whatsapp
+    from src.services.telegram_queue import queue_telegram
     from src.utils.db_handler import get_user_by_email
 
     short_msg = f"Reminder: \"{title}\" starts in 1 hour at {start_time}"
@@ -484,21 +574,134 @@ def send_reminder_1h(
         except Exception as e:
             print(f"[reminder_1h] Failed in-app notification for {email}: {e}")
 
+        meta = {
+            "channel":    "reminder",
+            "type":       "reminder_1h",
+            "intent":     "reminder",
+            "meeting_id": meeting_id,
+            "org_id":     (user or {}).get("org_id"),
+            "user_id":    (user or {}).get("id"),
+        }
         if user and user.get("phone_number"):
             try:
-                queue_whatsapp(
-                    user["phone_number"],
-                    short_msg,
-                    metadata={
-                        "channel":    "reminder",
-                        "type":       "reminder_1h",
-                        "intent":     "reminder",
-                        "meeting_id": meeting_id,
-                        "org_id":     user.get("org_id"),
-                        "user_id":    user.get("id"),
-                    },
-                )
+                queue_whatsapp(user["phone_number"], short_msg, metadata=meta)
             except Exception as e:
                 print(f"[reminder_1h] WhatsApp queue failed for {email}: {e}")
+        if user and user.get("telegram_chat_id"):
+            try:
+                queue_telegram(int(user["telegram_chat_id"]), short_msg, metadata=meta)
+            except Exception as e:
+                print(f"[reminder_1h] Telegram queue failed for {email}: {e}")
 
     return f"1h reminders sent for meeting {meeting_id}"
+
+
+@celery_app.task(name="send_reminder_30min")
+def send_reminder_30min(
+    meeting_id: str,
+    title: str,
+    start_time: str,
+    participant_emails: list,
+):
+    """
+    30-minute reminder fired by `_schedule_reminders` for the demo flow.
+    Identical fan-out to the 10-min reminder: in-app notification + WhatsApp
+    + Telegram for every participant who is a registered user.
+    """
+    from src.services.notification import create_notification
+    from src.services.whatsapp_queue import queue_whatsapp
+    from src.services.telegram_queue import queue_telegram
+    from src.utils.db_handler import get_user_by_email
+
+    short_msg = f"⏰ Reminder — \"{title}\" starts in 30 minutes ({start_time})."
+
+    for email in participant_emails:
+        user = None
+        try:
+            user = get_user_by_email(email)
+            if user:
+                create_notification(
+                    user_id=user["id"],
+                    message=short_msg,
+                    notification_type="reminder",
+                )
+        except Exception as e:
+            print(f"[reminder_30min] in-app failed for {email}: {e}")
+
+        meta = {
+            "channel":    "reminder",
+            "type":       "reminder_30min",
+            "intent":     "reminder",
+            "meeting_id": meeting_id,
+            "org_id":     (user or {}).get("org_id"),
+            "user_id":    (user or {}).get("id"),
+        }
+        if user and user.get("phone_number"):
+            try:
+                queue_whatsapp(user["phone_number"], short_msg, metadata=meta)
+            except Exception as e:
+                print(f"[reminder_30min] WhatsApp queue failed for {email}: {e}")
+        if user and user.get("telegram_chat_id"):
+            try:
+                queue_telegram(int(user["telegram_chat_id"]), short_msg, metadata=meta)
+            except Exception as e:
+                print(f"[reminder_30min] Telegram queue failed for {email}: {e}")
+
+    return f"30min reminders sent for meeting {meeting_id}"
+
+
+@celery_app.task(name="send_reminder_10min")
+def send_reminder_10min(
+    meeting_id: str,
+    title: str,
+    start_time: str,
+    participant_emails: list,
+):
+    """
+    10-minute "head's up" reminder. Fires close enough to the meeting that
+    even a forgetful attendee can still make it. Same fan-out as the 1h
+    reminder — in-app notification + WhatsApp + Telegram.
+
+    Useful for the demo: schedule a meeting at NOW+15min and the 10-min
+    reminder fires live on stage.
+    """
+    from src.services.notification import create_notification
+    from src.services.whatsapp_queue import queue_whatsapp
+    from src.services.telegram_queue import queue_telegram
+    from src.utils.db_handler import get_user_by_email
+
+    short_msg = f"⏰ Heads up — \"{title}\" starts in 10 minutes ({start_time})."
+
+    for email in participant_emails:
+        user = None
+        try:
+            user = get_user_by_email(email)
+            if user:
+                create_notification(
+                    user_id=user["id"],
+                    message=short_msg,
+                    notification_type="reminder",
+                )
+        except Exception as e:
+            print(f"[reminder_10min] in-app failed for {email}: {e}")
+
+        meta = {
+            "channel":    "reminder",
+            "type":       "reminder_10min",
+            "intent":     "reminder",
+            "meeting_id": meeting_id,
+            "org_id":     (user or {}).get("org_id"),
+            "user_id":    (user or {}).get("id"),
+        }
+        if user and user.get("phone_number"):
+            try:
+                queue_whatsapp(user["phone_number"], short_msg, metadata=meta)
+            except Exception as e:
+                print(f"[reminder_10min] WhatsApp queue failed for {email}: {e}")
+        if user and user.get("telegram_chat_id"):
+            try:
+                queue_telegram(int(user["telegram_chat_id"]), short_msg, metadata=meta)
+            except Exception as e:
+                print(f"[reminder_10min] Telegram queue failed for {email}: {e}")
+
+    return f"10min reminders sent for meeting {meeting_id}"

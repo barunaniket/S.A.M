@@ -17,6 +17,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from src.services.email_queue import queue_email
+from src.services.telegram_queue import queue_telegram
 from src.services.whatsapp_queue import queue_whatsapp
 from src.utils.db_handler import get_db_connection, release_db_connection
 
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 def _send_one(attendee: Dict[str, Any], subject: str, body: str,
               channels: List[str]) -> Dict[str, bool]:
-    delivered = {"email": False, "whatsapp": False}
+    delivered = {"email": False, "whatsapp": False, "telegram": False}
 
     if "email" in channels and attendee.get("email"):
         try:
@@ -46,6 +47,15 @@ def _send_one(attendee: Dict[str, Any], subject: str, body: str,
         except Exception:
             logger.exception("queue_whatsapp failed for %s", attendee.get("phone"))
 
+    if "telegram" in channels and attendee.get("telegram_chat_id"):
+        try:
+            queue_telegram(int(attendee["telegram_chat_id"]), body,
+                           metadata={"channel": "broadcast"})
+            delivered["telegram"] = True
+        except Exception:
+            logger.exception("queue_telegram failed for chat=%s",
+                             attendee.get("telegram_chat_id"))
+
     return delivered
 
 
@@ -57,19 +67,26 @@ def broadcast_to_attendees(attendees: List[Dict[str, Any]], subject: str,
     if not body:
         return {"success": False, "message": "Empty message body — nothing to send."}
 
-    channels = channels or ["email", "whatsapp"]
-    sent_email = sent_wa = 0
+    channels = channels or ["email", "whatsapp", "telegram"]
+    sent_email = sent_wa = sent_tg = 0
     for a in attendees:
         out = _send_one(a, subject, body, channels)
         sent_email += int(out["email"])
         sent_wa    += int(out["whatsapp"])
+        sent_tg    += int(out["telegram"])
 
-    msg = (f"Sent to {len(attendees)} contact(s): {sent_email} email(s), "
-           f"{sent_wa} WhatsApp message(s) queued.")
+    parts = [f"Sent to {len(attendees)} contact(s): {sent_email} email(s)"]
+    if sent_wa:
+        parts.append(f"{sent_wa} WhatsApp")
+    if sent_tg:
+        parts.append(f"{sent_tg} Telegram")
+    msg = ", ".join(parts) + " queued."
+
     return {"success": True, "message": msg,
             "counts": {"total": len(attendees),
                        "email": sent_email,
-                       "whatsapp": sent_wa}}
+                       "whatsapp": sent_wa,
+                       "telegram": sent_tg}}
 
 
 def _fetch_users(org_id: int, target_role: Optional[str],
@@ -90,7 +107,8 @@ def _fetch_users(org_id: int, target_role: Optional[str],
 
         sql = (
             "SELECT id, email, full_name AS name, phone_number AS phone, "
-            "role, department FROM users WHERE " + " AND ".join(clauses) + ";"
+            "telegram_chat_id, role, department "
+            "FROM users WHERE " + " AND ".join(clauses) + ";"
         )
         cur.execute(sql, params)
         rows = [dict(r) for r in cur.fetchall()]

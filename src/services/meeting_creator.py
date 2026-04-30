@@ -222,15 +222,20 @@ def _schedule_reminders(
     start_datetime: str,
     participant_emails: list,
 ):
-    """Schedule Celery reminder tasks at 24h and 1h before the meeting."""
+    """Schedule Celery reminder tasks at 24h, 1h, and 30min before the meeting."""
     try:
-        from src.worker import send_reminder_24h, send_reminder_1h
+        from src.worker import (
+            send_reminder_24h,
+            send_reminder_1h,
+            send_reminder_30min,
+        )
 
         start = datetime.fromisoformat(start_datetime.replace("Z", ""))
         now   = datetime.utcnow()
 
-        eta_24h = start - timedelta(hours=24)
-        eta_1h  = start - timedelta(hours=1)
+        eta_24h   = start - timedelta(hours=24)
+        eta_1h    = start - timedelta(hours=1)
+        eta_30min = start - timedelta(minutes=30)
 
         if eta_24h > now:
             send_reminder_24h.apply_async(
@@ -241,6 +246,11 @@ def _schedule_reminders(
             send_reminder_1h.apply_async(
                 args=[meeting_id, title, start_datetime, participant_emails],
                 eta=eta_1h,
+            )
+        if eta_30min > now:
+            send_reminder_30min.apply_async(
+                args=[meeting_id, title, start_datetime, participant_emails],
+                eta=eta_30min,
             )
     except Exception as e:
         print(f"[meeting_creator] Reminder scheduling failed (non-fatal): {e}")
@@ -258,6 +268,7 @@ def create_meeting(
     scheduler_email: str,
     recurrence: Optional[dict] = None,
     org_id: Optional[int] = None,
+    mode: str = "online",
 ) -> dict:
     """
     Create a new Google Calendar event.
@@ -271,6 +282,9 @@ def create_meeting(
     scheduler_email   : organiser's email (auth + conflict check)
     recurrence        : optional recurrence rule dict, e.g.
                         {"frequency": "WEEKLY", "count": 10, "days": ["MO", "WE"]}
+    mode              : "online" (default — auto-creates a Google Meet link)
+                        or "offline" (skips conferenceData; caller may call
+                        booking_service.request_booking afterwards).
 
     On conflict the response includes:
       "suggested_alternatives": [{start, end}, ...]   (up to 3 slots)
@@ -295,8 +309,15 @@ def create_meeting(
             except ValueError:
                 pass
 
-        # 1. Resolve display names → emails
-        participants      = resolve_participants(participant_names)
+        # 1. Resolve display names → emails. With org_id present, expand
+        # group names ("all HODs", "cs faculty", "CSE-3A") via the new
+        # user_resolver.expand_participant_names; otherwise fall back to
+        # the legacy fuzzy-only matcher used by the REST stateless flow.
+        if org_id:
+            from src.utils.user_resolver import expand_participant_names
+            participants = expand_participant_names(org_id, participant_names)
+        else:
+            participants = resolve_participants(participant_names)
         participant_emails = [p["email"] for p in participants if p.get("email")]
 
         # 2. Organiser conflict check
@@ -327,17 +348,20 @@ def create_meeting(
                     "suggested_alternatives": alternatives,
                 }
 
-        # 4. Build Google Calendar event body
+        # 4. Build Google Calendar event body. For offline meetings we skip
+        # the conferenceData block so Google does not auto-mint a Meet link.
+        is_online = (mode or "online").lower() != "offline"
         service    = get_calendar_service(user_email=scheduler_email)
         event_body = {
             "summary":  title,
             "start":    {"dateTime": start_datetime},
             "end":      {"dateTime": end_datetime},
             "attendees": [{"email": e} for e in participant_emails],
-            "conferenceData": {
-                "createRequest": {"requestId": f"sam-{title[:10]}"}
-            },
         }
+        if is_online:
+            event_body["conferenceData"] = {
+                "createRequest": {"requestId": f"sam-{title[:10]}"}
+            }
 
         # Feature 7: Recurring meetings
         if recurrence:
@@ -349,11 +373,11 @@ def create_meeting(
         event      = service.events().insert(
             calendarId="primary",
             body=event_body,
-            conferenceDataVersion=1,
+            conferenceDataVersion=1 if is_online else 0,
         ).execute()
 
         meeting_id = event.get("id")
-        meet_link  = event.get("hangoutLink")
+        meet_link  = event.get("hangoutLink") if is_online else None
 
         # Feature 9: Persist to local DB
         _persist_meeting_to_db(

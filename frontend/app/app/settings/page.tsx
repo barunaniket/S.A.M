@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { ConnectGoogleButton } from "@/components/auth/ConnectGoogleButton";
+import { TelegramConnectCard } from "@/components/auth/TelegramConnectCard";
 import { useAuth } from "@/hooks/useAuth";
 import { useGoogleStatus } from "@/hooks/useGoogleStatus";
 import { apiFetch } from "@/lib/api";
@@ -16,6 +17,7 @@ const tabs = [
   { id: "account", label: "Account" },
   { id: "briefing", label: "Daily briefing" },
   { id: "google", label: "Google Calendar" },
+  { id: "telegram", label: "Telegram" },
   { id: "about", label: "About" },
 ] as const;
 
@@ -128,6 +130,8 @@ export default function SettingsPage() {
               </CardContent>
             </Card>
           )}
+
+          {tab === "telegram" && <TelegramConnectCard />}
 
           {tab === "about" && (
             <Card>
