@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
@@ -41,7 +43,10 @@ async def api_process_intent(body: ProcessRequest, request: Request):
         list_meetings, send_email, clarification_needed, error
     """
     processor = _get_processor()
-    result = processor.process_user_intent(
+    # The LLM call is synchronous/blocking — run it off the event loop so one
+    # in-flight request doesn't stall every other connection on this worker.
+    result = await asyncio.to_thread(
+        processor.process_user_intent,
         user_input=body.user_input,
         session_context=body.session_context,
     )
@@ -74,7 +79,10 @@ async def api_execute_intent(body: ProcessRequest, request: Request):
         )
 
     processor = _get_processor()
-    intent_result = processor.process_user_intent(
+    # Both the LLM parse and the downstream action dispatch are blocking
+    # (LLM HTTP + DB/Google calls) — keep them off the async event loop.
+    intent_result = await asyncio.to_thread(
+        processor.process_user_intent,
         user_input=body.user_input,
         session_context=body.session_context,
     )
@@ -82,7 +90,9 @@ async def api_execute_intent(body: ProcessRequest, request: Request):
     if intent_result.get("intent") == "error":
         raise HTTPException(status_code=500, detail=intent_result.get("message"))
 
-    result = route_intent(intent_result, scheduler_email, org_id=org_id)
+    result = await asyncio.to_thread(
+        route_intent, intent_result, scheduler_email, org_id=org_id
+    )
 
     return {
         "intent":  intent_result,
@@ -96,7 +106,8 @@ async def api_get_clarification(body: ClarificationRequest):
     Generate targeted clarification questions for missing meeting details.
     Used when the LLM returns intent = "clarification_needed".
     """
-    question = get_clarification(
+    question = await asyncio.to_thread(
+        get_clarification,
         missing_fields=body.missing_fields,
         context=body.context or {},
     )

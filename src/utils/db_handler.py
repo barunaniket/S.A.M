@@ -34,6 +34,18 @@ def get_pool():
     return _connection_pool
 
 
+def set_org_rls(cur, org_id) -> None:
+    """
+    Pin the tenant for the current transaction so RLS policies apply.
+
+    Canonical single place for the `SET LOCAL app.org_id` statement that
+    otherwise gets copy-pasted across services that manage their own cursors
+    (broadcast_service, group_service, …). `get_db()` calls this internally;
+    raw-cursor callers should call it right after opening their cursor.
+    """
+    cur.execute("SET LOCAL app.org_id = %s;", (str(org_id),))
+
+
 # ======================================================
 # RAW CONNECTION — for modules that manage their own cursors
 # ======================================================
@@ -110,7 +122,7 @@ def get_db(org_id: int):
     try:
         conn.autocommit = False
         cur = conn.cursor()
-        cur.execute("SET LOCAL app.org_id = %s;", (str(org_id),))
+        set_org_rls(cur, org_id)
         yield cur
         conn.commit()
     except Exception:
@@ -201,7 +213,8 @@ def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
     with get_system_db() as cur:
         cur.execute(
             """SELECT id, org_id, email, full_name, picture_url, role,
-                      phone_number, department,
+                      phone_number, department, batch, office_location,
+                      telegram_chat_id, telegram_username,
                       access_token, encrypted_refresh_token
                FROM users WHERE email = %s;""",
             (email,)
@@ -221,7 +234,8 @@ def get_user_by_phone(phone_digits: str) -> Optional[Dict[str, Any]]:
     with get_system_db() as cur:
         cur.execute(
             """SELECT id, org_id, email, full_name, role,
-                      phone_number, department
+                      phone_number, department, batch, office_location,
+                      telegram_chat_id, telegram_username
                FROM users
                WHERE regexp_replace(phone_number, '[^0-9]', '', 'g') = %s
                   OR regexp_replace(phone_number, '[^0-9]', '', 'g') LIKE %s

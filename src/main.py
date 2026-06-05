@@ -1,3 +1,6 @@
+import logging
+from contextlib import asynccontextmanager
+
 import uvicorn
 from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,6 +9,23 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 # Core utilities
 from src.utils.middleware import verify_jwt_middleware
+from src.utils.db_handler import init_connection_pool
+
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Warm the connection pool at boot so the first request doesn't eat the
+    # pool-setup latency (psycopg2 SimpleConnectionPool opens minconn eagerly).
+    try:
+        init_connection_pool()
+        logger.info("startup: DB connection pool initialised")
+    except Exception:
+        # Don't block boot if the DB is briefly unavailable — get_pool() will
+        # retry lazily on first use.
+        logger.exception("startup: DB pool warmup failed (will init lazily)")
+    yield
 
 # Route modules
 from src.api.routes import auth
@@ -30,8 +50,14 @@ from src.api.routes import (
     tasks as tasks_routes,
     bookings as bookings_routes,
     admin_users as admin_users_routes,
+    admin_dashboard as admin_dashboard_routes,
+    admin_audit as admin_audit_routes,
     preferences as preferences_routes,
     telegram_link as telegram_link_routes,
+    assignments as assignments_routes,
+    attendance as attendance_routes,
+    materials as materials_routes,
+    settings as settings_routes,
 )
 
 # ---------------------------------------------------------------------------
@@ -41,6 +67,7 @@ app = FastAPI(
     title="S.A.M. Faculty Platform",
     version="2.0",
     description="Smart Administrative Messenger — backend API for the faculty scheduling platform",
+    lifespan=lifespan,
 )
 
 # ---------------------------------------------------------------------------
@@ -79,9 +106,15 @@ app.include_router(timetable_routes.router,    prefix="/api/v1", tags=["Timetabl
 app.include_router(academic_routes.router,     prefix="/api/v1", tags=["Academic Calendar"])
 app.include_router(tasks_routes.router,        prefix="/api/v1", tags=["Tasks"])
 app.include_router(bookings_routes.router,     prefix="/api/v1", tags=["Bookings"])
-app.include_router(admin_users_routes.router,  prefix="/api/v1", tags=["Admin Users"])
+app.include_router(admin_users_routes.router,     prefix="/api/v1", tags=["Admin Users"])
+app.include_router(admin_dashboard_routes.router, prefix="/api/v1", tags=["Admin Dashboard"])
+app.include_router(admin_audit_routes.router,     prefix="/api/v1", tags=["Admin Audit"])
 app.include_router(preferences_routes.router,  prefix="/api/v1", tags=["Preferences"])
 app.include_router(telegram_link_routes.router, prefix="/api/v1/me/telegram", tags=["Telegram"])
+app.include_router(assignments_routes.router,    prefix="/api/v1", tags=["Assignments"])
+app.include_router(attendance_routes.router,     prefix="/api/v1", tags=["Attendance"])
+app.include_router(materials_routes.router,      prefix="/api/v1", tags=["Materials"])
+app.include_router(settings_routes.router,       prefix="/api/v1", tags=["Settings"])
 
 # ---------------------------------------------------------------------------
 # Health check
