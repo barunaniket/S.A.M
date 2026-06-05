@@ -68,6 +68,7 @@ python scripts/migrate_v9_telegram.py
 python scripts/migrate_v10_demo.py
 python scripts/migrate_v11_mcq.py
 python scripts/migrate_v12_mvp.py
+python scripts/migrate_v13_spec.py
 python scripts/seed_demo.py                         # minimal demo cast (SPOC + Priya/Rahul + Arjun/Riya)
 python scripts/load_rosters.py --timetables        # full synthetic rosters from data/*.csv
 ```
@@ -125,6 +126,57 @@ weekday) alongside `query_time`. `intent_router` resolves the period to a
 datetime, calls `who_is_busy_at`, and falls back to `users.office_location`
 when the faculty has no class — "Dr Sharma doesn't have a class during 4th
 period — she should be in Faculty Block, Room 312."
+
+### v13 spec completion — read paths, PDF→MCQ, deadline nudges, dashboard
+
+The v13 ship filled five gaps in the chat surface and dashboard:
+
+1. **Read-path intents** in `src/services/intent_router.py`:
+   `query_attendance_sheet`, `query_my_attendance`, `query_class_submissions`,
+   `list_open_assignments_for_faculty`, `list_class_roster`. Faculty can now
+   say "bring up CS201 attendance for today" / "who hasn't submitted assignment 3".
+   Implementation in `src/services/attendance_query.py` + new helpers in
+   `src/services/assignment_service.py`. Telegram-friendly HTML messages built
+   in `src/utils/formatters.py`.
+
+2. **PDF-curated MCQ generation** (`src/services/mcq_generator.py`). Faculty
+   DMs a PDF with caption `material <subject>` (or uploads via
+   `/app/super-admin/materials`); `course_materials.record_material` saves
+   it with extracted text. `generate_mcq_attendance` LLM-drafts 5 MCQs;
+   faculty taps Approve, future `start mcq attendance` calls pull from
+   `mcq_question_bank` instead of the hardcoded `QUESTION_BANK` dict.
+
+3. **Assignment deadline nudges** in `src/tasks/assignments.py` + Celery
+   tasks `dispatch_assignment_nudge` and `close_assignment` registered in
+   `src/worker.py`. `assignment_service.create()` now schedules nudges at
+   `org_settings.assignment_nudge_hours` offsets (default `[24, 1]`).
+   Students get an inline-keyboard `[Almost done] [I'll submit now]` —
+   tapping the latter pre-fills the AWAITING_ASSN_FILE state so the next
+   photo lands as the submission.
+
+4. **Web dashboard pages** under `frontend/app/app/`:
+   `faculty/attendance`, `faculty/assignments[ /[id] ]`,
+   `super-admin/materials`, `super-admin/settings`. All gated via
+   `RoleGuard`; backend by `/api/v1/{attendance,assignments,materials,settings}`
+   in `src/api/routes/`.
+
+5. **RBAC backfill** on `/meetings`, `/groups`, `/analytics` — these
+   pre-v1 routes had JWT auth but no role guard. New routes are checked
+   automatically by `scripts/audit_route_rbac.py` (run in CI; tracks a
+   shrinking "known ungated" list for the remaining legacy routes).
+
+Per-org feature toggles live in the new `org_settings` table. Defaults
+seeded by `scripts/migrate_v13_spec.py`. SUPER_ADMIN edits via
+`/app/super-admin/settings`. Keys: `mcq_attendance_enabled`,
+`mcq_threshold`, `mcq_window_seconds`, `assignment_nudge_hours`,
+`poll_window_seconds`.
+
+Decisions baked into v13:
+- **DM-only delivery** for polls + MCQs — no class Telegram group binding.
+- **Filesystem storage** for course materials (matches `assignments.body_file_path`).
+- **Gap-fill scope** — no architectural refactor; existing handlers untouched.
+
+End-to-end smoke: `bash scripts/demo_v13.sh` (after seed + migrations).
 
 ### Telegram (optional)
 ```bash
