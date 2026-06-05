@@ -97,12 +97,37 @@ QUESTION_BANK: Dict[str, List[Dict[str, Any]]] = {
 LETTERS = ["A", "B", "C", "D"]
 
 
-def _resolve_questions(subject: str) -> List[Dict[str, Any]]:
-    """Pull the canonical set for a subject; fall back to DSA if unknown."""
+def _resolve_questions(subject: str,
+                       org_id: Optional[int] = None,
+                       count: int = 5) -> List[Dict[str, Any]]:
+    """
+    Pull the canonical question set for a subject. Resolution order:
+
+      1. mcq_question_bank rows (faculty-approved). Preferred, since they
+         were curated from real course material via the v13 MCQ generator.
+      2. Hardcoded QUESTION_BANK dict — kept as a dev-only safety net so
+         a brand-new org can demo MCQ attendance before any material has
+         been uploaded.
+      3. DSA fallback for unknown subjects (legacy behaviour).
+    """
+    if org_id is not None:
+        try:
+            from src.services.course_materials import (
+                fetch_approved_for_session,
+            )
+            bank_qs = fetch_approved_for_session(org_id, subject, count=count)
+            if bank_qs:
+                return bank_qs
+        except Exception:
+            logger.warning(
+                "course_materials lookup failed for org=%s subject=%r — "
+                "falling back to hardcoded bank",
+                org_id, subject, exc_info=True,
+            )
+
     key = (subject or "").strip()
     if key in QUESTION_BANK:
         return QUESTION_BANK[key]
-    # Try case-insensitive
     for k, v in QUESTION_BANK.items():
         if k.lower() == key.lower():
             return v
@@ -122,7 +147,9 @@ def start_session(faculty: Dict[str, Any], batch: str, subject: str,
     Create the session row, schedule Q1..Qn dispatches and the close task,
     and return a summary the orchestrator can show to the faculty.
     """
-    questions = questions or _resolve_questions(subject)
+    questions = questions or _resolve_questions(
+        subject, org_id=faculty.get("org_id"), count=5,
+    )
     if not questions:
         return {"success": False, "message": "No questions available."}
 
