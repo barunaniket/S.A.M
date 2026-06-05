@@ -1,14 +1,20 @@
-from fastapi import APIRouter, HTTPException
+import asyncio
+
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 
 from src.services.direct_email_service import DirectEmailService
 from src.services.email_queue import queue_email
 from src.services.notification_dispatcher import send_meeting_notification
+from src.utils.rbac import require_roles
 
 router = APIRouter()
 
 _email_service = DirectEmailService()
+
+# Sending mail on the org's behalf is a privileged action.
+_EMAIL_ROLES = require_roles("FACULTY", "ADMIN", "SUPER_ADMIN")
 
 
 class DirectEmailRequest(BaseModel):
@@ -31,12 +37,14 @@ class MeetingNotificationRequest(BaseModel):
     ics_attachment: Optional[str] = None
 
 
-@router.post("/email/send")
+@router.post("/email/send", dependencies=[Depends(_EMAIL_ROLES)])
 async def api_send_direct_email(body: DirectEmailRequest):
     """
     Send a direct email to a faculty member by resolving their display name.
     """
-    result = _email_service.send_email(
+    # Blocking SMTP — run off the event loop.
+    result = await asyncio.to_thread(
+        _email_service.send_email,
         target_name=body.target_name,
         subject=body.subject,
         message_body=body.message_body,
@@ -46,7 +54,7 @@ async def api_send_direct_email(body: DirectEmailRequest):
     return result
 
 
-@router.post("/email/queue")
+@router.post("/email/queue", dependencies=[Depends(_EMAIL_ROLES)])
 async def api_queue_email(body: QueueEmailRequest):
     """
     Push an email job onto the Redis queue for async delivery.
@@ -60,13 +68,15 @@ async def api_queue_email(body: QueueEmailRequest):
     return {"success": True, "message": "Email queued for delivery"}
 
 
-@router.post("/email/notify")
+@router.post("/email/notify", dependencies=[Depends(_EMAIL_ROLES)])
 async def api_send_meeting_notification(body: MeetingNotificationRequest):
     """
     Send an HTML meeting notification email (invite / update / cancel).
     Optionally attach an ICS calendar file.
     """
-    result = send_meeting_notification(
+    # Blocking SMTP send — run off the event loop.
+    result = await asyncio.to_thread(
+        send_meeting_notification,
         recipient_email=body.recipient_email,
         notification_type=body.notification_type,
         meeting_details=body.meeting_details,

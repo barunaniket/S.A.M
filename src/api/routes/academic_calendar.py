@@ -133,7 +133,7 @@ def manual_calendar(payload: ManualPayload, request: Request):
 # Reads / deletes
 # ---------------------------------------------------------------------------
 
-@router.get("/academic/events")
+@router.get("/academic/events", dependencies=[Depends(require_roles())])
 def get_events(request: Request,
                start: Optional[_date] = None,
                end: Optional[_date] = None):

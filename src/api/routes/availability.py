@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Depends, Request, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 
 from src.services.availability_engine import calculate_free_slots
+from src.utils.rbac import require_roles
 
 router = APIRouter()
 
@@ -23,7 +24,10 @@ class AvailabilityRequest(BaseModel):
     working_hours: Optional[WorkingHours] = None  # Feature 5
 
 
-@router.post("/availability")
+@router.post(
+    "/availability",
+    dependencies=[Depends(require_roles("FACULTY", "ADMIN", "SUPER_ADMIN"))],
+)
 async def api_get_availability(body: AvailabilityRequest, request: Request):
     """
     Calculate free time slots within a working window for a user.

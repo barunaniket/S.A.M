@@ -212,7 +212,7 @@ def manual_tasks(payload: BulkUploadConfirm, request: Request):
 # Reads + status
 # ---------------------------------------------------------------------------
 
-@router.get("/tasks")
+@router.get("/tasks", dependencies=[Depends(require_roles())])
 def list_tasks(request: Request, role: str = Query("assignee")):
     user_id = request.state.user_id
     if role == "admin":
@@ -227,7 +227,7 @@ def list_tasks(request: Request, role: str = Query("assignee")):
     return {"success": True, "tasks": rows}
 
 
-@router.get("/tasks/{task_id}")
+@router.get("/tasks/{task_id}", dependencies=[Depends(require_roles())])
 def get_one(task_id: int, request: Request):
     user_id = request.state.user_id
     org_id = request.state.org_id
@@ -242,7 +242,7 @@ def get_one(task_id: int, request: Request):
     return {"success": True, "task": task}
 
 
-@router.patch("/tasks/{task_id}")
+@router.patch("/tasks/{task_id}", dependencies=[Depends(require_roles())])
 def patch_task(task_id: int, payload: StatusUpdate, request: Request):
     user_id = request.state.user_id
     if payload.status not in ("PENDING", "DONE", "CANCELLED"):

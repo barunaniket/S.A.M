@@ -12,7 +12,7 @@ import os
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 
 from src.services.file_ingestor import (
     SUPPORTED_EXTS,
@@ -24,6 +24,7 @@ from src.services.file_ingestor import (
 )
 from src.utils.config_loader import Config
 from src.utils.db_handler import get_db
+from src.utils.rbac import require_roles
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,10 @@ def persist_pending_upload(
         return cur.fetchone()["id"]
 
 
-@router.post("/uploads")
+@router.post(
+    "/uploads",
+    dependencies=[Depends(require_roles("FACULTY", "ADMIN", "SUPER_ADMIN"))],
+)
 async def api_upload_file(request: Request, file: UploadFile = File(...)):
     """
     Upload a faculty-supplied file. Returns:
