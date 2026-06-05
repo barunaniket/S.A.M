@@ -106,7 +106,8 @@ def resolve_user_by_phone(phone: str) -> Optional[Dict[str, Any]]:
         # Match either with or without leading country code by suffix match.
         cur.execute(
             """
-            SELECT id, org_id, email, full_name, role, phone_number
+            SELECT id, org_id, email, full_name, role, phone_number,
+                   batch, department, office_location, telegram_chat_id
               FROM users
              WHERE regexp_replace(phone_number, '[^0-9]', '', 'g') = %s
                 OR regexp_replace(phone_number, '[^0-9]', '', 'g') LIKE %s
