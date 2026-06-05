@@ -85,8 +85,14 @@ def canonical_batch(org_id: int, batch: str) -> Optional[str]:
 
 def create(*, org_id: int, faculty_id: int, batch: str, subject: str,
            title: str, body_text: Optional[str] = None,
-           body_file_path: Optional[str] = None) -> Dict[str, Any]:
-    """INSERT a new assignment row. Returns the assignment dict."""
+           body_file_path: Optional[str] = None,
+           due_at=None) -> Dict[str, Any]:
+    """INSERT a new assignment row. Returns the assignment dict.
+
+    When `due_at` is provided, also schedules deadline-nudge Celery tasks
+    via src/tasks/assignments.schedule_reminders_for_assignment().
+    Failure to schedule is logged but never blocks creation.
+    """
     if not (body_text or body_file_path):
         return {"success": False,
                 "message": "An assignment needs a body (text or photo)."}
@@ -98,23 +104,40 @@ def create(*, org_id: int, faculty_id: int, batch: str, subject: str,
             """
             INSERT INTO assignments
                 (org_id, faculty_id, batch, subject, title,
-                 body_text, body_file_path)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                 body_text, body_file_path, due_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id, org_id, faculty_id, batch, subject, title,
-                      body_text, body_file_path, status, created_at;
+                      body_text, body_file_path, due_at, status, created_at;
             """,
             (org_id, faculty_id, batch, subject, title,
-             body_text, body_file_path),
+             body_text, body_file_path, due_at),
         )
         row = dict(cur.fetchone())
         conn.commit()
         cur.close()
     finally:
         release_db_connection(conn)
-    return {"success": True, "assignment": row,
-            "message": (f"✓ Created <b>{title}</b> for {subject} / {batch}. "
-                        "Students will see it when they say "
-                        "<i>submit assignment</i>.")}
+
+    if due_at:
+        try:
+            from src.tasks.assignments import schedule_reminders_for_assignment
+            schedule_reminders_for_assignment(row["id"], due_at)
+        except Exception:
+            logger.exception(
+                "Failed to schedule deadline nudges for assignment %s",
+                row["id"],
+            )
+
+    msg = f"✓ Created <b>{title}</b> for {subject} / {batch}."
+    if due_at:
+        try:
+            msg += (f" Due {due_at.strftime('%a %d %b %H:%M')} — "
+                    "I'll nudge non-submitters at 24h and 1h before.")
+        except Exception:
+            pass
+    msg += (" Students will see it when they say "
+            "<i>submit assignment</i>.")
+    return {"success": True, "assignment": row, "message": msg}
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +172,112 @@ def list_open_for_batch(org_id: int, batch: str) -> List[Dict[str, Any]]:
         return rows
     finally:
         release_db_connection(conn)
+
+
+def list_open_for_faculty(org_id: int,
+                          faculty_id: int) -> List[Dict[str, Any]]:
+    """
+    All open + recently-closed assignments authored by this faculty, with
+    a precomputed (submitted, enrolled) pair. Used by the
+    `list_open_assignments_for_faculty` intent and the web view at
+    /app/faculty/assignments.
+
+    The submission count is via correlated subquery; for the org sizes
+    we deal with this is fast enough and avoids a GROUP BY that would
+    drop assignments with zero submissions.
+    """
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT a.id, a.subject, a.title, a.batch, a.due_at, a.status,
+                   a.created_at,
+                   (SELECT COUNT(*) FROM assignment_submissions s
+                     WHERE s.assignment_id = a.id
+                       AND s.status IN ('PENDING','CONFIRMED','REVIEWED'))
+                       AS submitted,
+                   (SELECT COUNT(*) FROM users u
+                     WHERE u.org_id = a.org_id
+                       AND u.role   = 'STUDENT'
+                       AND u.batch  = a.batch)
+                       AS enrolled
+              FROM assignments a
+             WHERE a.org_id     = %s
+               AND a.faculty_id = %s
+             ORDER BY (a.status = 'OPEN') DESC,
+                      a.created_at DESC
+             LIMIT 50;
+            """,
+            (org_id, faculty_id),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.close()
+        return rows
+    finally:
+        release_db_connection(conn)
+
+
+def submissions_for_assignment(assignment_id: int) -> Dict[str, Any]:
+    """
+    Faculty-facing: who has + has not submitted.
+
+    Returns the standard envelope. `data` includes the assignment row,
+    a `submitted` list (each {user_id, full_name, status, submitted_at,
+    file_path}) and a `missing` list of users in the batch who haven't
+    submitted at all.
+    """
+    assignment = get_assignment(assignment_id)
+    if not assignment:
+        return {"success": False, "message": "Assignment not found."}
+
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT s.id, s.student_id AS user_id, u.full_name,
+                   s.status, s.submitted_at, s.confirmed_at,
+                   s.file_path, s.caption
+              FROM assignment_submissions s
+              JOIN users u ON u.id = s.student_id
+             WHERE s.assignment_id = %s
+             ORDER BY s.submitted_at DESC;
+            """,
+            (assignment_id,),
+        )
+        submitted = [dict(r) for r in cur.fetchall()]
+        submitted_ids = {r["user_id"] for r in submitted}
+
+        cur.execute(
+            """
+            SELECT id AS user_id, full_name, email, telegram_chat_id
+              FROM users
+             WHERE org_id = %s
+               AND role   = 'STUDENT'
+               AND batch  = %s
+             ORDER BY full_name;
+            """,
+            (assignment["org_id"], assignment["batch"]),
+        )
+        all_students = [dict(r) for r in cur.fetchall()]
+        cur.close()
+    finally:
+        release_db_connection(conn)
+
+    missing = [s for s in all_students if s["user_id"] not in submitted_ids]
+
+    return {
+        "success": True,
+        "data": {
+            "assignment": assignment,
+            "submitted": submitted,
+            "missing": missing,
+            "submitted_count": len(submitted),
+            "missing_count": len(missing),
+            "enrolled": len(all_students),
+        },
+    }
 
 
 def get_assignment(assignment_id: int) -> Optional[Dict[str, Any]]:
