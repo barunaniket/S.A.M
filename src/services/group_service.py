@@ -15,6 +15,7 @@ from src.utils.db_handler import (
     get_db,
     get_db_connection,
     release_db_connection,
+    set_org_rls,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,7 +55,7 @@ def get_group_by_name(org_id: int, name: str) -> Optional[Dict[str, Any]]:
     conn = get_db_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SET LOCAL app.org_id = %s;", (str(org_id),))
+        set_org_rls(cur, org_id)
         cur.execute(
             "SELECT id, name, description, created_at FROM user_groups "
             "WHERE org_id = %s AND LOWER(name) = LOWER(%s) LIMIT 1;",
@@ -71,7 +72,7 @@ def list_groups(org_id: int) -> List[Dict[str, Any]]:
     conn = get_db_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SET LOCAL app.org_id = %s;", (str(org_id),))
+        set_org_rls(cur, org_id)
         cur.execute(
             """
             SELECT g.id, g.name, g.description, g.created_at,
@@ -175,7 +176,7 @@ def list_members(org_id: int, group_id: int) -> List[Dict[str, Any]]:
     conn = get_db_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SET LOCAL app.org_id = %s;", (str(org_id),))
+        set_org_rls(cur, org_id)
         cur.execute(
             """
             SELECT u.id, u.email, u.full_name AS name, u.phone_number AS phone,
@@ -206,7 +207,7 @@ def resolve_group(org_id: int,
         conn = get_db_connection()
         try:
             cur = conn.cursor()
-            cur.execute("SET LOCAL app.org_id = %s;", (str(org_id),))
+            set_org_rls(cur, org_id)
             cur.execute(
                 "SELECT id, name FROM user_groups WHERE id = %s AND org_id = %s;",
                 (group_id, org_id),

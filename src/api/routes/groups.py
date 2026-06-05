@@ -11,10 +11,11 @@ REST surface for faculty-defined user groups.
 
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Path, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from pydantic import BaseModel
 
 from src.services import group_service
+from src.utils.rbac import require_roles
 
 router = APIRouter()
 
@@ -37,13 +38,19 @@ class AddMembersRequest(BaseModel):
     emails:   Optional[List[str]] = None
 
 
-@router.get("/groups")
+@router.get(
+    "/groups",
+    dependencies=[Depends(require_roles())],   # any authenticated user can read
+)
 async def api_list_groups(request: Request):
     org_id, _ = _ctx(request)
     return {"success": True, "data": group_service.list_groups(org_id)}
 
 
-@router.post("/groups")
+@router.post(
+    "/groups",
+    dependencies=[Depends(require_roles("ADMIN", "FACULTY", "SUPER_ADMIN"))],
+)
 async def api_create_group(body: CreateGroupRequest, request: Request):
     org_id, user_id = _ctx(request)
     result = group_service.create_group(
@@ -57,7 +64,10 @@ async def api_create_group(body: CreateGroupRequest, request: Request):
     return result
 
 
-@router.delete("/groups/{group_id}")
+@router.delete(
+    "/groups/{group_id}",
+    dependencies=[Depends(require_roles("ADMIN", "SUPER_ADMIN"))],
+)
 async def api_delete_group(group_id: int, request: Request):
     org_id, _ = _ctx(request)
     result = group_service.delete_group(org_id, group_id)
@@ -66,13 +76,19 @@ async def api_delete_group(group_id: int, request: Request):
     return result
 
 
-@router.get("/groups/{group_id}/members")
+@router.get(
+    "/groups/{group_id}/members",
+    dependencies=[Depends(require_roles())],
+)
 async def api_list_members(group_id: int, request: Request):
     org_id, _ = _ctx(request)
     return {"success": True, "data": group_service.list_members(org_id, group_id)}
 
 
-@router.post("/groups/{group_id}/members")
+@router.post(
+    "/groups/{group_id}/members",
+    dependencies=[Depends(require_roles("ADMIN", "FACULTY", "SUPER_ADMIN"))],
+)
 async def api_add_members(group_id: int, body: AddMembersRequest, request: Request):
     org_id, _ = _ctx(request)
 
@@ -97,7 +113,10 @@ async def api_add_members(group_id: int, body: AddMembersRequest, request: Reque
     return {"success": True, "added": added, "missing_emails": missing}
 
 
-@router.delete("/groups/{group_id}/members/{user_id}")
+@router.delete(
+    "/groups/{group_id}/members/{user_id}",
+    dependencies=[Depends(require_roles("ADMIN", "FACULTY", "SUPER_ADMIN"))],
+)
 async def api_remove_member(group_id: int, user_id: int, request: Request):
     org_id, _ = _ctx(request)
     result = group_service.remove_member(org_id, group_id, user_id)

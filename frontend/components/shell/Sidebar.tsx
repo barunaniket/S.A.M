@@ -3,14 +3,16 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  BookOpen,
   Calendar,
-  CalendarRange,
+  ClipboardCheck,
   ClipboardList,
   DoorOpen,
+  FileText,
+  LayoutDashboard,
   MessageSquare,
   Megaphone,
   Settings,
-  ShieldCheck,
   Upload,
   Users,
   UserSquare2,
@@ -36,9 +38,11 @@ const items: SidebarItem[] = [
   { href: "/app/broadcasts", label: "Broadcasts", icon: Megaphone },
   { href: "/app/timetable/upload", label: "My timetable", icon: Upload, roles: ["FACULTY", "ADMIN"] },
   { href: "/app/admin/tasks", label: "Task assignments", icon: ClipboardList, roles: ["ADMIN"] },
+  { href: "/app/faculty/attendance", label: "Attendance", icon: ClipboardCheck, roles: ["FACULTY", "ADMIN"] },
+  { href: "/app/faculty/assignments", label: "Assignments", icon: FileText, roles: ["FACULTY", "ADMIN"] },
   { href: "/app/booking/queue", label: "Booking queue", icon: DoorOpen, roles: ["BOOKING_AUTHORITY"] },
-  { href: "/app/super-admin/calendar", label: "Academic calendar", icon: CalendarRange, roles: ["SUPER_ADMIN"] },
-  { href: "/app/super-admin/users", label: "User management", icon: ShieldCheck, roles: ["SUPER_ADMIN"] },
+  { href: "/app/super-admin/materials", label: "Course materials", icon: BookOpen, roles: ["FACULTY", "ADMIN"] },
+  { href: "/app/super-admin", label: "Super admin", icon: LayoutDashboard, roles: ["SUPER_ADMIN"] },
   { href: "/app/settings", label: "Settings", icon: Settings },
 ];
 

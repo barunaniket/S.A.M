@@ -86,7 +86,8 @@ def resolve_user_by_chat_id(chat_id: int) -> Optional[Dict[str, Any]]:
         cur.execute(
             """
             SELECT id, org_id, email, full_name, role, phone_number,
-                   telegram_chat_id, telegram_username
+                   telegram_chat_id, telegram_username, batch, department,
+                   office_location
               FROM users
              WHERE telegram_chat_id = %s
              LIMIT 1;
@@ -556,6 +557,25 @@ def _handle_document(user: Dict[str, Any], chat_id: int,
         _handle_tasks_upload_tg(user, chat_id, parsed, saved)
         return
 
+    # ------------------------------------------------------------------
+    # Course material upload — caption "material <subject>" or
+    # "material <subject> <batch>" stores the file in course_materials.
+    # Faculty/admin only. Triggers MCQ generation prompt afterwards.
+    # ------------------------------------------------------------------
+    caption_raw = (message.get("caption") or "").strip()
+    material_match = re.match(
+        r"^material\s+([\w\-]+)(?:\s+([\w\-]+))?\s*$",
+        caption_raw, flags=re.IGNORECASE,
+    ) if caption_raw else None
+    if material_match and (user.get("role") or "").upper() in (
+        "FACULTY", "ADMIN", "SUPER_ADMIN",
+    ):
+        subject = material_match.group(1)
+        batch = material_match.group(2)
+        _handle_material_upload_tg(user, chat_id, parsed, saved,
+                                    subject=subject, batch=batch)
+        return
+
     attendees = extract_attendees(parsed)
     meeting   = extract_meeting_metadata(parsed)
     summary   = summarize(parsed, attendees)
@@ -678,6 +698,73 @@ def _handle_timetable_upload_tg(user: Dict[str, Any], chat_id: int,
         append_history_tg(chat_id, "assistant", body, extra={"interactive": True})
     except Exception:
         _reply(chat_id, body, org_id=user.get("org_id"), user_id=user.get("id"))
+
+
+def _handle_material_upload_tg(user: Dict[str, Any], chat_id: int,
+                                parsed: Dict[str, Any], saved_path: Any,
+                                *, subject: str,
+                                batch: Optional[str] = None) -> None:
+    """
+    Faculty/admin sent a course-material file with caption
+    'material <subject> [<batch>]'. Persist to course_materials with the
+    extracted text, then offer to generate MCQs from it.
+    """
+    from src.services import course_materials
+
+    extracted = (parsed.get("text") or "").strip()
+    if not extracted or len(extracted) < 100:
+        _reply(chat_id,
+               "I saved the file, but couldn't extract enough readable text "
+               "to generate MCQs from it. Try a clearer scan or a "
+               "text-based PDF.",
+               org_id=user.get("org_id"), user_id=user.get("id"))
+        # Still record so it's findable for human reference.
+
+    title = parsed.get("title") or saved_path.name
+    try:
+        material = course_materials.record_material(
+            org_id=user["org_id"],
+            subject=subject,
+            batch=batch,
+            title=title,
+            file_path=str(saved_path),
+            mime_type=parsed.get("kind"),
+            extracted_text=extracted,
+            uploaded_by=user["id"],
+        )
+    except Exception:
+        logger.exception("course_materials insert failed")
+        _reply(chat_id, "I couldn't save that material to the library — "
+                        "please try again.",
+               org_id=user.get("org_id"), user_id=user.get("id"))
+        return
+
+    body_lines = [
+        f"📚 Saved <b>{title}</b> to the {subject} library "
+        f"({len(extracted)} chars indexed).",
+    ]
+    if extracted:
+        body_lines.append(
+            "\nWant me to draft attendance MCQs from this? Reply "
+            f"<code>generate mcq attendance {subject}</code> or use the "
+            "button below."
+        )
+    body = "\n".join(body_lines)
+
+    if extracted:
+        try:
+            send_buttons(
+                chat_id=chat_id, body=body,
+                buttons=[{"id": f"gen_mcq_{material['id']}_{subject}",
+                          "title": f"📝 Generate 5 MCQs for {subject}"}],
+                footer="Material library",
+            )
+            return
+        except Exception:
+            pass
+
+    _reply(chat_id, body,
+           org_id=user.get("org_id"), user_id=user.get("id"))
 
 
 def _handle_tasks_upload_tg(user: Dict[str, Any], chat_id: int,
@@ -1471,6 +1558,160 @@ def _handle_callback(callback: Dict[str, Any]) -> None:
         _reply(chat_id, result.get("message") or
                ("Done." if result.get("success") else "Couldn't process that."),
                org_id=user.get("org_id"), user_id=user.get("id"))
+        return
+
+    # ----- Deadline-nudge buttons (student side) -----
+    if data and (data.startswith("nudge_almost_") or
+                 data.startswith("nudge_now_")):
+        is_now = data.startswith("nudge_now_")
+        prefix = "nudge_now_" if is_now else "nudge_almost_"
+        try:
+            assignment_id = int(data[len(prefix):])
+        except ValueError:
+            _reply(chat_id, "Bad button payload.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+        if not is_now:
+            _reply(chat_id,
+                   "👍 Got it — I'll stop nagging. Good luck!",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+
+        # "I'll submit now" — pre-fill the AWAITING_ASSN_FILE state so the
+        # student's next photo lands as the submission.
+        from src.services.assignment_service import get_assignment
+        assignment = get_assignment(assignment_id)
+        if not assignment or assignment.get("status") != "OPEN":
+            _reply(chat_id,
+                   "That assignment isn't accepting submissions any more.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+        session = session or {}
+        session.update({
+            "user_id": user["id"],
+            "org_id": user["org_id"],
+            "state": "AWAITING_ASSN_FILE",
+            "assn_payload": {"assignment_id": assignment_id},
+        })
+        set_session_tg(chat_id, session)
+        _reply(chat_id,
+               f"📤 Send me a photo of your work for "
+               f"<b>{assignment['subject']} — {assignment['title']}</b>. "
+               "I'll register it and ask you to confirm.",
+               org_id=user.get("org_id"), user_id=user.get("id"))
+        return
+
+    # ----- MCQ generation: faculty taps "Generate 5 MCQs for X" -----
+    if data and data.startswith("gen_mcq_"):
+        if (user.get("role") or "").upper() not in (
+            "FACULTY", "ADMIN", "SUPER_ADMIN",
+        ):
+            _reply(chat_id, "Only faculty/admin can generate attendance MCQs.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+        try:
+            _, _, rest = data.partition("gen_mcq_")
+            mat_s, _, subject = rest.partition("_")
+            material_id = int(mat_s)
+        except (ValueError, AttributeError):
+            _reply(chat_id, "Couldn't parse that material.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+        if not subject:
+            _reply(chat_id, "Tap the 'Generate' button on the upload card "
+                            "or run <code>generate mcq attendance "
+                            "&lt;subject&gt;</code>.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+
+        from src.services import course_materials, mcq_generator
+        material = course_materials.get_material(material_id)
+        if not material or material["org_id"] != user.get("org_id"):
+            _reply(chat_id, "I couldn't find that material in your library.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+
+        result = mcq_generator.generate_from_text(
+            subject=subject,
+            text=material.get("extracted_text") or "",
+            count=5,
+        )
+        if not result.get("success"):
+            _reply(chat_id, result.get("message") or "Generation failed.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+
+        questions = result["questions"]
+        bank_ids = course_materials.bulk_insert_questions(
+            org_id=user["org_id"],
+            subject=subject,
+            source_material_id=material_id,
+            questions=questions,
+        )
+
+        # Show preview as a single message + Approve/Discard buttons.
+        lines = [f"📝 <b>Drafted {len(questions)} MCQ(s) for {subject}</b>",
+                 "<i>Review below — tap Approve to use them in the next "
+                 "attendance quiz, or Discard to throw them out.</i>\n"]
+        for i, q in enumerate(questions, start=1):
+            lines.append(f"<b>Q{i}.</b> {q['question']}")
+            for j, choice in enumerate(q["choices"]):
+                marker = "✓" if j == q["correct_index"] else " "
+                lines.append(f"   {marker} {chr(65 + j)}. {choice}")
+            lines.append("")
+        body = "\n".join(lines)
+
+        bank_ids_csv = ",".join(str(i) for i in bank_ids)
+        try:
+            send_buttons(
+                chat_id=chat_id, body=body,
+                buttons=[
+                    {"id": f"bank_approve_{bank_ids_csv}",
+                     "title": "✅ Approve all"},
+                    {"id": f"bank_discard_{bank_ids_csv}",
+                     "title": "❌ Discard"},
+                ],
+                footer=f"{subject} bank",
+            )
+        except Exception:
+            _reply(chat_id, body,
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+        return
+
+    # ----- MCQ bank approve/discard -----
+    if data and (data.startswith("bank_approve_") or
+                 data.startswith("bank_discard_")):
+        if (user.get("role") or "").upper() not in (
+            "FACULTY", "ADMIN", "SUPER_ADMIN",
+        ):
+            _reply(chat_id, "Only faculty/admin can approve MCQs.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+        approve = data.startswith("bank_approve_")
+        prefix = "bank_approve_" if approve else "bank_discard_"
+        try:
+            ids = [int(x) for x in data[len(prefix):].split(",") if x]
+        except ValueError:
+            _reply(chat_id, "Bad button payload.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+            return
+        from src.services import course_materials
+        if approve:
+            n = course_materials.approve(
+                org_id=user["org_id"], ids=ids, approved_by=user["id"],
+            )
+            _reply(chat_id,
+                   f"✅ Approved {n} question(s). Next time you say "
+                   "<code>start mcq attendance &lt;subject&gt;</code>, the "
+                   "quiz will use these.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
+        else:
+            # Soft-discard: just leave them unapproved. They stay in the
+            # bank for audit but won't be picked up by start_session.
+            _reply(chat_id,
+                   "Discarded — these candidates won't be used. "
+                   "Send a fresh PDF and try again.",
+                   org_id=user.get("org_id"), user_id=user.get("id"))
         return
 
     # ----- Booking approve/deny (M5) -----

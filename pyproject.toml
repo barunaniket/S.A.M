@@ -9,3 +9,31 @@ description = "Smart Administrative Messenger"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+# Generated/vendored trees that shouldn't be linted.
+extend-exclude = [".venv", "graphify-out", "frontend", "data"]
+
+[tool.ruff.lint]
+# Conservative starter set: pyflakes (F), pycodestyle errors/warnings (E/W),
+# import sorting (I), pyupgrade (UP), flake8-bugbear (B), comprehensions (C4).
+# Line length is enforced by the formatter, so E501 is off here.
+select = ["E", "F", "W", "I", "UP", "B", "C4"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests intentionally set env / import after side effects.
+"tests/*" = ["E402"]
+"scripts/*" = ["E402"]
+
+[tool.mypy]
+python_version = "3.11"
+# Pragmatic starting posture — surface real issues without drowning in
+# missing third-party stubs. Tighten incrementally (per-module overrides).
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+exclude = "(^\\.venv/|^graphify-out/|^frontend/|^data/)"

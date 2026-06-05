@@ -9,15 +9,19 @@ GET /api/v1/analytics/meetings
   &user_email=optional@override.com   (defaults to JWT email)
 """
 
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Depends, Request, HTTPException
 from typing import Optional
 
 from src.services.meeting_analytics import get_meeting_analytics
+from src.utils.rbac import require_roles
 
 router = APIRouter()
 
 
-@router.get("/analytics/meetings")
+@router.get(
+    "/analytics/meetings",
+    dependencies=[Depends(require_roles("ADMIN", "SUPER_ADMIN"))],
+)
 async def api_meeting_analytics(
     from_date: str,
     to_date: str,

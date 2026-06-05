@@ -15,10 +15,35 @@ GET /api/v1/notifications/{user_id} continues to work as before.
 
 import asyncio
 import json
+import logging
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+import jwt
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
+
+from src.utils.config_loader import Config
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _authorize(websocket: WebSocket, user_id: int) -> bool:
+    """
+    Validate the JWT passed as a `?token=` query param and confirm it belongs
+    to `user_id`. WebSocket handshakes bypass the HTTP JWT middleware and
+    browsers can't set an Authorization header on a WebSocket, so the token
+    rides in the query string. Without this check any client could subscribe
+    to another user's notification channel (IDOR).
+    """
+    token = websocket.query_params.get("token")
+    if not token:
+        return False
+    try:
+        payload = jwt.decode(token, Config.SECRET_KEY, algorithms=[Config.ALGORITHM])
+    except jwt.InvalidTokenError:
+        return False
+    # The token's identity must match the channel being subscribed to.
+    return payload.get("user_id") == user_id
 
 
 @router.websocket("/ws/notifications/{user_id}")
@@ -29,8 +54,14 @@ async def websocket_notifications(websocket: WebSocket, user_id: int):
     The client connects once and receives JSON messages as they arrive:
         {"message": "...", "type": "invite|update|cancel|reminder"}
 
-    The connection stays open until the client disconnects.
+    The connection stays open until the client disconnects. The client must
+    supply its JWT as `?token=<jwt>`; a missing/invalid token, or one whose
+    user_id doesn't match the path, is rejected before accept.
     """
+    if not _authorize(websocket, user_id):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
     await websocket.accept()
 
     try:
@@ -66,8 +97,8 @@ async def websocket_notifications(websocket: WebSocket, user_id: int):
         )
         await websocket.close()
 
-    except Exception as e:
-        print(f"[ws_notifications] Unexpected error for user {user_id}: {e}")
+    except Exception:
+        logger.exception("[ws_notifications] Unexpected error for user %s", user_id)
         try:
             await websocket.close()
         except Exception:

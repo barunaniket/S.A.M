@@ -76,6 +76,12 @@ A faculty/admin/student/booking-authority user talks to you, usually over WhatsA
 24. Create an assignment (create_assignment) — faculty wants to publish a new assignment for a class. Extract `target_batch` (required) and `target_subject` (optional — backend infers from current period if missing). Triggered by phrases like "create an assignment for CSE-3A", "new assignment for class 4A", "make an assignment for CSE-3B", "set up homework for my batch".
 25. Submit an assignment (submit_assignment) — student wants to submit work to one of their open assignments. No entities. Triggered by phrases like "submit assignment", "i want to submit", "submit my work", "submission", "i'm submitting an assignment".
 26. List my assignments (list_my_assignments) — student wants to see what assignments are open for their batch. No entities. Triggered by phrases like "show my assignments", "what assignments do i have", "list assignments", "any assignments due".
+27. Query attendance sheet (query_attendance_sheet) — faculty/admin wants to retrieve the attendance roster for a class. Extract `target_subject` (required) and optionally `target_batch`, `query_date` (ISO 8601 date — defaults to today), `query_date_from` + `query_date_to` (for ranges). Triggered by phrases like "bring up the attendance sheet for CS201", "show attendance for DSA today", "who was absent in Compilers yesterday", "attendance for CSE-3A this week". If the user just says "show attendance" with no subject, return clarification_needed.
+28. Query my attendance (query_my_attendance) — student wants their own attendance %. No entities. Triggered by phrases like "what's my attendance", "show my attendance", "my attendance percentage", "how's my attendance".
+29. Query class submissions (query_class_submissions) — faculty wants to see who has and hasn't submitted a particular assignment. Extract `target_subject` (optional) and `target_assignment_label` (optional — extracted from phrases like "assignment 3", "assgn3", "hw5") to pick the right assignment when faculty has multiple open. Triggered by phrases like "who hasn't submitted assignment 3", "show submissions for CS201 assgn 2", "submissions for the DSA homework", "who's missing for assignment 3".
+30. List open assignments for faculty (list_open_assignments_for_faculty) — faculty wants to see their own open assignments + submission counts. No entities (use the JWT/session faculty). Triggered by phrases like "list my assignments" (when role=FACULTY or ADMIN), "show my open assignments", "what assignments do i have out", "my assignments". Note this clashes with #26 (list_my_assignments which is student-facing) — disambiguate by role: STUDENT → list_my_assignments, FACULTY/ADMIN → list_open_assignments_for_faculty.
+31. List class roster (list_class_roster) — faculty/admin wants to see the students in a batch. Extract `target_batch` (required). Triggered by phrases like "list students in CSE-3A", "show me the roster for class 4B", "who's in CSE-3A", "students in my batch".
+32. Generate MCQ attendance from material (generate_mcq_attendance) — faculty wants S.A.M to draft attendance MCQs from a previously-uploaded PDF/slide deck for a subject. Extract `target_subject` (required) and optionally `mcq_count` (integer 1-10, default 5). Triggered by phrases like "generate mcq attendance for DSA", "draft 5 mcqs for compilers", "make a quiz for CS201 from the slides", "create attendance questions for CS201". Distinct from #19 (start_mcq_attendance which uses pre-existing questions to actually run a quiz).
 
 ### RULES:
 - Output ONLY valid JSON. No markdown, no code fences, no commentary.
@@ -93,7 +99,7 @@ A faculty/admin/student/booking-authority user talks to you, usually over WhatsA
 
 ### OUTPUT SCHEMA:
 {
-  "intent": "create_meeting" | "reschedule_meeting" | "cancel_meeting" | "list_meetings" | "send_email" | "broadcast_notification" | "create_group" | "list_groups" | "confirm_upload" | "discard_upload" | "onboard_timetable" | "confirm_timetable" | "discard_timetable" | "query_faculty_status" | "assign_tasks" | "confirm_tasks" | "discard_tasks" | "cancel_class" | "start_mcq_attendance" | "override_attendance" | "query_my_next_class" | "start_poll_attendance" | "close_poll" | "create_assignment" | "submit_assignment" | "list_my_assignments" | "clarification_needed",
+  "intent": "create_meeting" | "reschedule_meeting" | "cancel_meeting" | "list_meetings" | "send_email" | "broadcast_notification" | "create_group" | "list_groups" | "confirm_upload" | "discard_upload" | "onboard_timetable" | "confirm_timetable" | "discard_timetable" | "query_faculty_status" | "assign_tasks" | "confirm_tasks" | "discard_tasks" | "cancel_class" | "start_mcq_attendance" | "override_attendance" | "query_my_next_class" | "start_poll_attendance" | "close_poll" | "create_assignment" | "submit_assignment" | "list_my_assignments" | "query_attendance_sheet" | "query_my_attendance" | "query_class_submissions" | "list_open_assignments_for_faculty" | "list_class_roster" | "generate_mcq_attendance" | "clarification_needed",
   "entities": {
     "title": "string or null",
     "participants": ["name1", "name2"],
@@ -113,6 +119,11 @@ A faculty/admin/student/booking-authority user talks to you, usually over WhatsA
     "query_time": "ISO_8601 or null",
     "query_period": "integer 1-8 or null",
     "query_day_keyword": "string or null",
+    "query_date": "ISO_8601 date (YYYY-MM-DD) or null",
+    "query_date_from": "ISO_8601 date or null",
+    "query_date_to": "ISO_8601 date or null",
+    "target_assignment_label": "string or null (e.g. 'assgn3', 'hw5')",
+    "mcq_count": "integer 1-10 or null",
     "group_name": "string or null",
     "members_emails": ["email1", "email2"],
     "description": "string or null",

@@ -1,8 +1,9 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
 
 from src.utils.self_healing_calendar import sync_calendar_changes
+from src.utils.rbac import require_roles
 
 router = APIRouter()
 
@@ -13,7 +14,10 @@ class CalendarSyncRequest(BaseModel):
     user_email: Optional[str] = None   # defaults to JWT user email
 
 
-@router.post("/calendar/sync")
+@router.post(
+    "/calendar/sync",
+    dependencies=[Depends(require_roles("FACULTY", "ADMIN", "SUPER_ADMIN"))],
+)
 async def api_sync_calendar(body: CalendarSyncRequest, request: Request):
     """
     Trigger a self-healing sync of Google Calendar events into the local DB.

@@ -14,6 +14,13 @@ Supported intents:
     confirm_upload, discard_upload,
     onboard_timetable, confirm_timetable, discard_timetable,
     query_faculty_status,
+    cancel_class,
+    start_mcq_attendance, start_poll_attendance, close_poll,
+    override_attendance,
+    query_my_next_class,
+    query_attendance_sheet, query_my_attendance,
+    query_class_submissions, list_open_assignments_for_faculty,
+    list_class_roster,
     clarification_needed
 """
 
@@ -625,6 +632,250 @@ def route_intent(intent_result: dict, scheduler_email: str,
         msg = (f"Your next class is <b>{subject}</b>{where} {when_phrase} "
                f"— with {faculty}.")
         return {"success": True, "data": entry, "message": msg}
+
+    # ------------------------------------------------------------------
+    elif intent == "query_attendance_sheet":
+        # Faculty/admin: "bring up the attendance sheet for CS201"
+        if org_id is None or not scheduler_email:
+            return {"success": False,
+                    "error": "query_attendance_sheet requires the faculty session."}
+
+        from datetime import date as _date
+
+        from src.services.attendance_query import fetch_sheet
+        from src.utils.db_handler import get_user_by_email
+
+        user = get_user_by_email(scheduler_email)
+        if not user or user.get("role") not in (
+            "FACULTY", "ADMIN", "SUPER_ADMIN",
+        ):
+            return {"success": False,
+                    "message": "Only faculty/admin can pull a class "
+                               "attendance sheet."}
+
+        subject = entities.get("target_subject") or entities.get("title")
+        if not subject:
+            return {"success": False, "needs_clarification": True,
+                    "message": ("Which subject? e.g. "
+                                "<i>show CS201 attendance for today</i>")}
+
+        # Date resolution: explicit query_date wins, else range, else today.
+        def _parse_date(v):
+            if not v:
+                return None
+            try:
+                return _date.fromisoformat(str(v)[:10])
+            except ValueError:
+                return None
+
+        class_date = _parse_date(entities.get("query_date"))
+        date_from = _parse_date(entities.get("query_date_from"))
+        date_to = _parse_date(entities.get("query_date_to"))
+        if class_date is None and date_from is None and date_to is None:
+            class_date = _date.today()
+
+        return fetch_sheet(
+            org_id=org_id,
+            subject=subject,
+            batch=entities.get("target_batch"),
+            class_date=class_date,
+            date_from=date_from,
+            date_to=date_to,
+        )
+
+    # ------------------------------------------------------------------
+    elif intent == "query_my_attendance":
+        # Student: "what's my attendance?"
+        if not scheduler_email:
+            return {"success": False,
+                    "error": "query_my_attendance requires the user session."}
+
+        from src.services.attendance_query import fetch_my_summary
+        from src.utils.db_handler import get_user_by_email
+
+        user = get_user_by_email(scheduler_email)
+        if not user:
+            return {"success": False,
+                    "message": "I couldn't find your account."}
+        return fetch_my_summary(user["id"])
+
+    # ------------------------------------------------------------------
+    elif intent == "query_class_submissions":
+        # Faculty: "who hasn't submitted assignment 3?"
+        if org_id is None or not scheduler_email:
+            return {"success": False,
+                    "error": "query_class_submissions requires the faculty session."}
+
+        from src.services.assignment_service import (
+            list_open_for_faculty,
+            submissions_for_assignment,
+        )
+        from src.utils.db_handler import get_user_by_email
+        from src.utils.formatters import format_submissions
+
+        faculty = get_user_by_email(scheduler_email)
+        if not faculty or faculty.get("role") not in (
+            "FACULTY", "ADMIN", "SUPER_ADMIN",
+        ):
+            return {"success": False,
+                    "message": "Only faculty/admin can view class submissions."}
+
+        candidates = list_open_for_faculty(org_id, faculty["id"])
+        if not candidates:
+            return {"success": True,
+                    "message": "You haven't published any assignments yet."}
+
+        subject = (entities.get("target_subject") or "").strip().lower()
+        label = (entities.get("target_assignment_label") or "").strip().lower()
+
+        # Filter by subject if given.
+        pool = [a for a in candidates
+                if not subject or subject in (a["subject"] or "").lower()]
+        if not pool:
+            pool = candidates
+
+        # Pick by label (e.g. "assgn3" → match in title) if given.
+        match = None
+        if label:
+            for a in pool:
+                title = (a.get("title") or "").lower()
+                if label in title or label.replace(" ", "") in title.replace(" ", ""):
+                    match = a
+                    break
+        if match is None:
+            # Fall back to most recent open assignment in the filtered pool.
+            open_pool = [a for a in pool if a["status"] == "OPEN"]
+            match = (open_pool or pool)[0]
+
+        result = submissions_for_assignment(match["id"])
+        if not result.get("success"):
+            return result
+
+        a = result["data"]["assignment"]
+        msg = format_submissions(
+            assignment_title=a["title"],
+            subject=a["subject"],
+            batch=a["batch"],
+            due_at=a.get("due_at"),
+            submitted=result["data"]["submitted"],
+            missing=result["data"]["missing"],
+        )
+        result["message"] = msg
+        return result
+
+    # ------------------------------------------------------------------
+    elif intent == "list_open_assignments_for_faculty":
+        if org_id is None or not scheduler_email:
+            return {"success": False,
+                    "error": "list_open_assignments_for_faculty "
+                             "requires the faculty session."}
+
+        from src.services.assignment_service import list_open_for_faculty
+        from src.utils.db_handler import get_user_by_email
+        from src.utils.formatters import format_open_assignments
+
+        faculty = get_user_by_email(scheduler_email)
+        if not faculty or faculty.get("role") not in (
+            "FACULTY", "ADMIN", "SUPER_ADMIN",
+        ):
+            return {"success": False,
+                    "message": "Only faculty/admin can list class assignments."}
+
+        rows = list_open_for_faculty(org_id, faculty["id"])
+        msg = format_open_assignments(
+            faculty_name=faculty.get("full_name") or "Faculty",
+            rows=rows,
+        )
+        return {"success": True,
+                "data": {"assignments": rows, "count": len(rows)},
+                "message": msg}
+
+    # ------------------------------------------------------------------
+    elif intent == "list_class_roster":
+        if org_id is None or not scheduler_email:
+            return {"success": False,
+                    "error": "list_class_roster requires the faculty session."}
+
+        from src.services.attendance_query import list_class_roster as _roster
+        from src.utils.db_handler import get_user_by_email
+
+        user = get_user_by_email(scheduler_email)
+        if not user or user.get("role") not in (
+            "FACULTY", "ADMIN", "SUPER_ADMIN",
+        ):
+            return {"success": False,
+                    "message": "Only faculty/admin can pull a class roster."}
+
+        batch = entities.get("target_batch") or entities.get("group_name")
+        return _roster(org_id=org_id, batch=batch)
+
+    # ------------------------------------------------------------------
+    elif intent == "generate_mcq_attendance":
+        # Faculty: "generate mcq attendance for DSA"
+        if org_id is None or not scheduler_email:
+            return {"success": False,
+                    "error": "generate_mcq_attendance requires the faculty session."}
+
+        from src.services import course_materials, mcq_generator
+        from src.utils.db_handler import get_user_by_email
+
+        faculty = get_user_by_email(scheduler_email)
+        if not faculty or faculty.get("role") not in (
+            "FACULTY", "ADMIN", "SUPER_ADMIN",
+        ):
+            return {"success": False,
+                    "message": "Only faculty/admin can generate attendance MCQs."}
+
+        subject = entities.get("target_subject") or entities.get("title")
+        if not subject:
+            return {"success": False, "needs_clarification": True,
+                    "message": ("Which subject? e.g. "
+                                "<i>generate mcq attendance for DSA</i>")}
+        try:
+            count = int(entities.get("mcq_count") or 5)
+        except (TypeError, ValueError):
+            count = 5
+        count = max(1, min(count, 10))
+
+        result = mcq_generator.generate_for_subject(
+            org_id=org_id, subject=subject, count=count,
+        )
+        if not result.get("success"):
+            return result
+
+        questions = result["questions"]
+        bank_ids = course_materials.bulk_insert_questions(
+            org_id=org_id,
+            subject=subject,
+            source_material_id=result.get("material_id"),
+            questions=questions,
+        )
+
+        # Build a chat-friendly preview. Approval still happens via the
+        # button card from the orchestrator's gen_mcq_ flow; for the REST
+        # path we return the candidates inline.
+        lines = [f"📝 <b>Drafted {len(questions)} MCQ(s) for {subject}</b>"]
+        if result.get("material_title"):
+            lines.append(f"<i>From: {result['material_title']}</i>")
+        lines.append("")
+        for i, q in enumerate(questions, start=1):
+            lines.append(f"<b>Q{i}.</b> {q['question']}")
+            for j, choice in enumerate(q["choices"]):
+                marker = "✓" if j == q["correct_index"] else " "
+                lines.append(f"   {marker} {chr(65 + j)}. {choice}")
+            lines.append("")
+        lines.append(
+            "<i>Tap the Approve button on the bot's preview, or run "
+            f"</i><code>start mcq attendance {subject}</code><i> after "
+            "approval to launch the quiz.</i>"
+        )
+
+        return {
+            "success": True,
+            "data": {"bank_ids": bank_ids, "questions": questions,
+                     "subject": subject},
+            "message": "\n".join(lines),
+        }
 
     # ------------------------------------------------------------------
     elif intent == "clarification_needed":

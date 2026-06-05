@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional
 from src.services.email_queue import queue_email
 from src.services.telegram_queue import queue_telegram
 from src.services.whatsapp_queue import queue_whatsapp
-from src.utils.db_handler import get_db_connection, release_db_connection
+from src.utils.db_handler import get_db_connection, release_db_connection, set_org_rls
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +94,7 @@ def _fetch_users(org_id: int, target_role: Optional[str],
     conn = get_db_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SET LOCAL app.org_id = %s;", (str(org_id),))
+        set_org_rls(cur, org_id)
 
         clauses = ["org_id = %s"]
         params: List[Any] = [org_id]

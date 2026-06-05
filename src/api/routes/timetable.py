@@ -196,13 +196,13 @@ def manual_timetable(payload: ManualTimetable, request: Request):
 # Reads
 # ---------------------------------------------------------------------------
 
-@router.get("/timetable/me")
+@router.get("/timetable/me", dependencies=[Depends(require_roles())])
 def my_timetable(request: Request):
     user_id = request.state.user_id
     return {"success": True, "entries": list_entries_for_user(user_id)}
 
 
-@router.get("/timetable/user/{user_id}")
+@router.get("/timetable/user/{user_id}", dependencies=[Depends(require_roles())])
 def user_timetable(user_id: int, request: Request):
     # Anyone authenticated can read another user's timetable in the same org
     # — that's the whole point of student status queries. Cross-org peeking

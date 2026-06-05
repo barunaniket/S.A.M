@@ -1,9 +1,12 @@
 # src/utils/concurrency.py
+import logging
 import os
 import uuid
 import asyncio
 from contextlib import asynccontextmanager
 from redis.asyncio import Redis # NOTE: Using Async Redis client
+
+logger = logging.getLogger(__name__)
 
 # Connect to Redis (Async Version)
 # Decode responses ensures we get strings, not bytes
@@ -56,5 +59,5 @@ async def distributed_lock(resource_key: str, lock_timeout: int = 10, retries: i
         # We ignore errors here to prevent crashing if Redis goes away during release
         try:
             await redis_client.eval(UNLOCK_SCRIPT, 1, lock_name, my_token)
-        except Exception as e:
-            print(f"Warning: Failed to release lock {lock_name}: {e}")
+        except Exception:
+            logger.warning("Failed to release lock %s", lock_name, exc_info=True)

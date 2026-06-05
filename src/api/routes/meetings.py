@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Depends, Request, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional, Tuple
 
 from src.services.meeting_creator import create_meeting
 from src.services.meeting_modifier import reschedule_meeting, cancel_meeting
 from src.services.meeting_fetcher import search_meetings
+from src.utils.rbac import require_roles
 
 router = APIRouter()
 
@@ -36,7 +37,10 @@ class SearchMeetingsRequest(BaseModel):
     time_slot: Optional[Tuple[str, str]] = None
 
 
-@router.post("/meetings")
+@router.post(
+    "/meetings",
+    dependencies=[Depends(require_roles("FACULTY", "ADMIN", "SUPER_ADMIN"))],
+)
 async def api_create_meeting(body: CreateMeetingRequest, request: Request):
     """
     Create a new Google Calendar meeting.
@@ -70,7 +74,10 @@ async def api_create_meeting(body: CreateMeetingRequest, request: Request):
     return result
 
 
-@router.patch("/meetings/{meeting_id}")
+@router.patch(
+    "/meetings/{meeting_id}",
+    dependencies=[Depends(require_roles("FACULTY", "ADMIN", "SUPER_ADMIN"))],
+)
 async def api_reschedule_meeting(
     meeting_id: str, body: RescheduleMeetingRequest, request: Request
 ):
@@ -95,7 +102,10 @@ async def api_reschedule_meeting(
     return result
 
 
-@router.delete("/meetings/{meeting_id}")
+@router.delete(
+    "/meetings/{meeting_id}",
+    dependencies=[Depends(require_roles("FACULTY", "ADMIN", "SUPER_ADMIN"))],
+)
 async def api_cancel_meeting(meeting_id: str, request: Request):
     """Cancel (delete) a meeting from Google Calendar and notify all participants."""
     scheduler_email = getattr(request.state, "email", None)
@@ -113,7 +123,10 @@ async def api_cancel_meeting(meeting_id: str, request: Request):
     return result
 
 
-@router.post("/meetings/search")
+@router.post(
+    "/meetings/search",
+    dependencies=[Depends(require_roles())],   # any authenticated user
+)
 async def api_search_meetings(body: SearchMeetingsRequest):
     """Search meetings in the local DB with optional filters."""
     filters = body.dict(exclude_none=True)
