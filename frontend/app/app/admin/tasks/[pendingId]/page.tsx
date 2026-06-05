@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { use, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { RoleGuard } from "@/components/auth/RoleGuard";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -181,10 +181,9 @@ function ReviewInner({ pendingId }: { pendingId: number }) {
 export default function TaskReviewPage({
   params,
 }: {
-  params: Promise<{ pendingId: string }>;
+  params: { pendingId: string };
 }) {
-  const resolved = use(params);
-  const pid = Number(resolved.pendingId);
+  const pid = Number(params.pendingId);
   if (!Number.isFinite(pid)) {
     return <p className="p-8 text-sm text-destructive">Bad URL</p>;
   }
