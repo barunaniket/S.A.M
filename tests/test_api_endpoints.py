@@ -52,9 +52,12 @@ ORG_ID  = 42
 EMAIL   = "faculty@uni.edu"
 
 
-def _jwt(uid=USER_ID, oid=ORG_ID, email=EMAIL) -> str:
+def _jwt(uid=USER_ID, oid=ORG_ID, email=EMAIL, role="SUPER_ADMIN") -> str:
+    # Default role is SUPER_ADMIN so a single token passes every route guard
+    # (require_roles rejects a token with no role claim). Pass role=... to test
+    # role-specific behaviour.
     return pyjwt.encode(
-        {"user_id": uid, "org_id": oid, "email": email,
+        {"user_id": uid, "org_id": oid, "email": email, "role": role,
          "exp": int(time.time()) + 3600},
         Config.SECRET_KEY,
         algorithm=Config.ALGORITHM,
