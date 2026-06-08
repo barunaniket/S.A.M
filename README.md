@@ -1,4 +1,4 @@
-# S.A.M — Smart Administrative Messenger
+# S.A.M — Smart Administrative Management
 
 Backend API for an agentic faculty-scheduling platform. S.A.M is the single
 operational interface used by a designated **teacher-in-charge** (SPOC) to
